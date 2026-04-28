@@ -6,7 +6,7 @@ Both blueprints are written for current Home Assistant releases (selectors with 
 
 ## Blueprints
 
-### Air Purifier Schedule
+### Air Purifier Schedule V1
 
 [![Open your Home Assistant instance and show the blueprint import dialog with this blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fmhanzelka%2Fhomeassistant%2Fmain%2Fblueprints%2Fair_purifier_schedule_v1.yaml)
 
@@ -27,7 +27,7 @@ Drives a `fan`-domain air purifier from a Home Assistant **schedule helper** and
 
 ### Window Ventilation Guard
 
-[![Open your Home Assistant instance and show the blueprint import dialog with this blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fmhanzelka%2Fhomeassistant%2Fmain%2Fblueprints%2Fwindow_ventilation_guard.yaml)
+> **Status: in development.** The YAML is in this repo but the blueprint isn't ready for general use yet — no one-click import button on purpose. Expect breaking changes; import only if you're ready to read the source.
 
 Watches open windows and fires an alert action when ventilating becomes counter-productive — different logic for winter and summer, switched automatically by a rolling-average outdoor temperature sensor.
 
@@ -54,7 +54,6 @@ If the button doesn't work (e.g. you haven't set up [My Home Assistant](https://
 1. Settings → Automations & Scenes → Blueprints → **Import Blueprint**.
 2. Paste the raw URL of the YAML file:
    - `https://raw.githubusercontent.com/mhanzelka/homeassistant/main/blueprints/air_purifier_schedule_v1.yaml`
-   - `https://raw.githubusercontent.com/mhanzelka/homeassistant/main/blueprints/window_ventilation_guard.yaml`
 
 ## License
 
