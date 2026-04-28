@@ -1,0 +1,604 @@
+blueprint:
+  name: "Window Ventilation Guard"
+  description: >
+    Monitors open windows and triggers warnings based on outdoor temperature.
+    Supports winter and summer modes determined automatically by a statistics
+    sensor (rolling average of outdoor temperature). In winter, an eco mode
+    switch forces immediate timer start. In summer, ventilation is beneficial
+    as long as outdoor temperature is below indoor temperature minus a
+    configurable offset.
+  domain: automation
+  author: Scylla10
+  input:
+
+    # ── Section: Sensors ───────────────────────────────────────────────────────
+
+    section_sensors:
+      name: Sensors
+      icon: mdi:thermometer
+      input:
+
+        window_sensors:
+          name: Window sensors
+          description: >
+            One or more contact sensors to monitor (device_class: window).
+          selector:
+            entity:
+              domain: binary_sensor
+              multiple: true
+              filter:
+                - device_class: window
+                - device_class: door
+
+        outdoor_temp_sensor:
+          name: Outdoor temperature sensor
+          description: >
+            Current outdoor temperature (°C). Accepts a temperature sensor
+            (sensor with device_class temperature) or a weather entity.
+          selector:
+            entity:
+              filter:
+                - domain: sensor
+                  device_class: temperature
+                - domain: weather
+
+        indoor_temp_sensor:
+          name: Indoor temperature sensor
+          description: >
+            Current indoor temperature (°C). Used in summer mode to determine
+            whether ventilation is beneficial.
+          selector:
+            entity:
+              domain: sensor
+              device_class: temperature
+
+        outdoor_temp_statistics_sensor:
+          name: Outdoor temperature – rolling average sensor
+          description: >
+            A statistics sensor that provides the mean outdoor temperature over
+            the past 24–72 hours. Used to determine winter vs. summer mode.
+            Create it under Settings → Helpers → Statistics sensor, targeting
+            your outdoor temperature entity.
+          selector:
+            entity:
+              domain: sensor
+              device_class: temperature
+
+        eco_mode_switch:
+          name: Eco mode switch
+          description: >
+            When ON, every open window triggers the timer immediately in winter
+            mode, regardless of the outdoor temperature threshold.
+          selector:
+            entity:
+              domain: input_boolean
+
+    # ── Section: Season ────────────────────────────────────────────────────────
+
+    section_season:
+      name: Season switching
+      icon: mdi:calendar-sync
+      collapsed: true
+      input:
+
+        season_summer_threshold:
+          name: Summer threshold (°C)
+          description: >
+            When the rolling average is ABOVE this value the blueprint switches to
+            summer mode.
+          default: 18
+          selector:
+            number:
+              min: 0
+              max: 35
+              step: 0.5
+              unit_of_measurement: "°C"
+              mode: slider
+
+        season_winter_threshold:
+          name: Winter threshold (°C)
+          description: >
+            When the rolling average is BELOW this value the blueprint switches to
+            winter mode. A dead-band between the two thresholds keeps the mode
+            stable during transitional days.
+          default: 14
+          selector:
+            number:
+              min: 0
+              max: 35
+              step: 0.5
+              unit_of_measurement: "°C"
+              mode: slider
+
+        season_mode_entity:
+          name: Season mode entity
+          description: >
+            An input_select (options: summer, winter) or input_text helper that
+            stores the currently active season mode. The automation updates it
+            when a threshold is crossed and reads it to preserve the previous
+            value in the dead-band (hysteresis — no neutral state). Pre-set it
+            to "winter" or "summer" before enabling the automation.
+          selector:
+            entity:
+              domain:
+                - input_select
+                - input_text
+
+        season_auto_switch:
+          name: Season auto-switch
+          description: >
+            When enabled, the season mode entity is updated automatically based
+            on the rolling average temperature. When disabled, the season mode
+            entity is not touched and can be controlled manually.
+          default: true
+          selector:
+            boolean:
+
+    # ── Section: Winter ────────────────────────────────────────────────────────
+
+    section_winter:
+      name: Winter mode
+      icon: mdi:snowflake
+      collapsed: true
+      input:
+
+        winter_temp_lower:
+          name: Minimum safe outdoor temperature (°C)
+          description: >
+            Below this temperature the timer always starts (with or without eco
+            mode). Protects against genuinely cold outdoor air.
+          default: 5
+          selector:
+            number:
+              min: -20
+              max: 20
+              step: 0.5
+              unit_of_measurement: "°C"
+              mode: slider
+
+        winter_temp_upper:
+          name: Anomaly threshold (°C)
+          description: >
+            Above this temperature ventilation is always considered safe even in
+            winter mode (warm anomaly day). No timer is started.
+          default: 20
+          selector:
+            number:
+              min: 5
+              max: 35
+              step: 0.5
+              unit_of_measurement: "°C"
+              mode: slider
+
+    # ── Section: Summer ────────────────────────────────────────────────────────
+
+    section_summer:
+      name: Summer mode
+      icon: mdi:sun-thermometer
+      collapsed: true
+      input:
+
+        summer_offset:
+          name: Close-in-advance offset (°C)
+          description: >
+            The timer starts when outdoor temperature ≥ (indoor − offset). An
+            offset of 1 means the window should be closed 1 °C before outdoor
+            temperature reaches indoor temperature.
+          default: 1
+          selector:
+            number:
+              min: 0
+              max: 10
+              step: 0.5
+              unit_of_measurement: "°C"
+              mode: slider
+
+    # ── Section: Timers & actions ──────────────────────────────────────────────
+
+    section_timers:
+      name: Timers & actions
+      icon: mdi:timer-outline
+      collapsed: true
+      input:
+
+        delay_alert:
+          name: Delay before alert
+          description: >
+            Time after the window opens (and conditions are unfavourable) before
+            the alert action is triggered (measured from when the window opened).
+          default:
+            hours: 0
+            minutes: 30
+            seconds: 0
+          selector:
+            duration:
+
+        action_alert:
+          name: Alert action
+          description: >
+            Action to run when the alert delay expires — a critical push when
+            the situation is already serious (e.g. a mobile push notification
+            or a siren).
+          selector:
+            action: {}
+
+    # ── Section: Indicators ───────────────────────────────────────────────────
+
+    section_indicators:
+      name: Indicators
+      icon: mdi:eye-outline
+      collapsed: true
+      input:
+
+        window_recommendation_entity:
+          name: Window recommendation entity (optional)
+          description: >
+            An input_boolean helper updated by the automation to indicate whether
+            the window should currently be open (on) or closed (off).
+            on = open/keep open, off = close/keep closed.
+            In winter mode the recommendation is only active within the
+            configured morning and evening ventilation windows.
+          default: {}
+          selector:
+            entity:
+              domain: input_boolean
+
+    # ── Section: Winter ventilation ───────────────────────────────────────────
+
+    section_winter_ventilation:
+      name: Winter ventilation
+      icon: mdi:snowflake-thermometer
+      collapsed: true
+      input:
+
+        morning_ventilation_start:
+          name: Morning ventilation – start time
+          description: >
+            From this time the window recommendation entity can turn on (winter
+            mode only). Does not enforce ventilation — only defines when the
+            recommendation is allowed to be active.
+          default: "07:00:00"
+          selector:
+            time:
+
+        morning_ventilation_end:
+          name: Morning ventilation – end time
+          description: >
+            After this time the morning recommendation turns off regardless of
+            quota. Does not enforce ventilation — only defines when the
+            recommendation stops being active.
+          default: "09:00:00"
+          selector:
+            time:
+
+        morning_ventilation_target:
+          name: Morning ventilation – target (minutes)
+          description: >
+            How many minutes of ventilation should occur during the morning
+            window. When reached, the recommendation turns off for the rest of
+            the morning. Set to 0 to disable the morning window.
+          default: 10
+          selector:
+            number:
+              min: 0
+              max: 120
+              step: 1
+              unit_of_measurement: "min"
+              mode: slider
+
+        evening_ventilation_start:
+          name: Evening ventilation – start time
+          description: >
+            From this time the window recommendation entity can turn on again
+            (winter mode only). Does not enforce ventilation — only defines when
+            the recommendation is allowed to be active.
+          default: "18:00:00"
+          selector:
+            time:
+
+        evening_ventilation_end:
+          name: Evening ventilation – end time
+          description: >
+            After this time the evening recommendation turns off regardless of
+            quota. Does not enforce ventilation — only defines when the
+            recommendation stops being active.
+          default: "20:00:00"
+          selector:
+            time:
+
+        evening_ventilation_target:
+          name: Evening ventilation – target (minutes)
+          description: >
+            How many minutes of ventilation should occur during the evening
+            window. When reached, the recommendation turns off for the rest of
+            the evening. Set to 0 to disable the evening window.
+          default: 10
+          selector:
+            number:
+              min: 0
+              max: 120
+              step: 1
+              unit_of_measurement: "min"
+              mode: slider
+
+        ventilation_tracker:
+          name: Ventilation tracker entity (optional)
+          description: >
+            An input_text helper used by the automation to track today's
+            ventilation minutes for each window. The automation writes a JSON
+            value of the form {"date":"YYYY-MM-DD","morning":X,"evening":Y}
+            and resets automatically when the date changes — no midnight reset
+            needed.
+
+            Create it under Settings → Helpers → Text (no special config
+            needed). To also see history charts, add a template sensor that
+            reads the morning/evening values from this entity.
+
+            Leave empty to disable quota tracking.
+          default: {}
+          selector:
+            entity:
+              domain: input_text
+
+# ── Variables ─────────────────────────────────────────────────────────────────
+# Resolve !input references into template variables so they can be used inside
+# Jinja2 expressions.
+
+variables:
+  var_window_sensors:          !input window_sensors
+  var_outdoor_temp_sensor:     !input outdoor_temp_sensor
+  var_indoor_temp_sensor:      !input indoor_temp_sensor
+  var_stats_sensor:            !input outdoor_temp_statistics_sensor
+  var_eco_mode:                !input eco_mode_switch
+  var_season_summer:           !input season_summer_threshold
+  var_season_winter:           !input season_winter_threshold
+  var_season_mode_entity:      !input season_mode_entity
+  var_season_auto_switch:      !input season_auto_switch
+  var_winter_lower:            !input winter_temp_lower
+  var_winter_upper:            !input winter_temp_upper
+  var_summer_offset:           !input summer_offset
+  var_recommendation_entity:   !input window_recommendation_entity
+  var_morning_start:           !input morning_ventilation_start
+  var_morning_end:             !input morning_ventilation_end
+  var_evening_start:           !input evening_ventilation_start
+  var_evening_end:             !input evening_ventilation_end
+  var_morning_target:          !input morning_ventilation_target
+  var_evening_target:          !input evening_ventilation_target
+  var_ventilation_tracker:     !input ventilation_tracker
+
+# ── Triggers ──────────────────────────────────────────────────────────────────
+
+trigger:
+  # Any monitored window opens
+  - platform: state
+    entity_id: !input window_sensors
+    to: "on"
+    id: window_opened
+
+  # Any monitored window closes – used to cancel pending delays
+  - platform: state
+    entity_id: !input window_sensors
+    to: "off"
+    id: window_closed
+
+  # Outdoor temperature changes while a window is open (season / threshold re-eval)
+  - platform: state
+    entity_id: !input outdoor_temp_sensor
+    id: temp_changed
+
+  # Eco mode toggled on while a window is open
+  - platform: state
+    entity_id: !input eco_mode_switch
+    to: "on"
+    id: eco_activated
+
+# ── Conditions ────────────────────────────────────────────────────────────────
+
+condition: []
+
+# ── Actions ───────────────────────────────────────────────────────────────────
+
+action:
+  - choose:
+
+    # ── Branch 1: window closed → accumulate ventilation time ───────────────
+    - conditions:
+        - condition: trigger
+          id: window_closed
+      sequence:
+        - variables:
+            duration_minutes: >
+              {% if trigger.from_state and trigger.from_state.last_changed %}
+                {{ ((as_timestamp(now()) - as_timestamp(trigger.from_state.last_changed)) / 60) | round(1) }}
+              {% else %}
+                0
+              {% endif %}
+            now_time: "{{ now().strftime('%H:%M:%S') }}"
+            closed_in_morning: "{{ var_morning_start <= now_time < var_morning_end }}"
+            closed_in_evening: "{{ var_evening_start <= now_time < var_evening_end }}"
+        - if:
+            - condition: template
+              value_template: >
+                {{ var_ventilation_tracker not in [{}, '']
+                   and duration_minutes > 0
+                   and (closed_in_morning or closed_in_evening) }}
+          then:
+            - variables:
+                _raw: "{{ states(var_ventilation_tracker) }}"
+                _data: >
+                  {{ _raw | from_json if _raw not in ['', 'unknown', 'unavailable', 'None'] else {} }}
+                _today: "{{ now().strftime('%Y-%m-%d') }}"
+                _morning_existing: >
+                  {{ _data.get('morning', 0) if _data.get('date') == _today else 0 }}
+                _evening_existing: >
+                  {{ _data.get('evening', 0) if _data.get('date') == _today else 0 }}
+                _new_morning: >
+                  {{ _morning_existing + duration_minutes if closed_in_morning else _morning_existing }}
+                _new_evening: >
+                  {{ _evening_existing + duration_minutes if closed_in_evening else _evening_existing }}
+            - service: input_text.set_value
+              target:
+                entity_id: "{{ var_ventilation_tracker }}"
+              data:
+                value: >
+                  {"date":"{{ _today }}","morning":{{ _new_morning }},"evening":{{ _new_evening }}}
+        - stop: "Window closed – automation ends."
+
+    # ── Branch 2: window opened / temp changed / eco activated ──────────────
+    - conditions:
+        - condition: or
+          conditions:
+            - condition: trigger
+              id: window_opened
+            - condition: trigger
+              id: temp_changed
+            - condition: trigger
+              id: eco_activated
+      sequence:
+
+        # Proceed only if at least one monitored window is currently open
+        - condition: template
+          value_template: >
+            {{ expand(integration_entities('binary_sensor')) | selectattr('attributes.device_class','eq','window') | selectattr('state','eq','on') | list | count > 0
+               or trigger.id == 'window_opened' }}
+
+        # Determine current season and whether conditions are unfavourable
+        - variables:
+            stats_temp: >
+              {{ states(var_stats_sensor) | float(0) }}
+            outdoor_temp: >
+              {% if state_attr(var_outdoor_temp_sensor, 'temperature') is not none %}
+                {{ state_attr(var_outdoor_temp_sensor, 'temperature') | float(0) }}
+              {% else %}
+                {{ states(var_outdoor_temp_sensor) | float(0) }}
+              {% endif %}
+            indoor_temp: >
+              {{ states(var_indoor_temp_sensor) | float(0) }}
+            eco_on: >
+              {{ is_state(var_eco_mode, 'on') }}
+
+            # Season with hysteresis: read stored entity state in the dead-band
+            # so the mode never enters a neutral state – always summer or winter.
+            is_summer: >
+              {% if stats_temp > var_season_summer | float %}
+                true
+              {% elif stats_temp < var_season_winter | float %}
+                false
+              {% else %}
+                {{ states(var_season_mode_entity) == 'summer' }}
+              {% endif %}
+            is_winter: >
+              {% if stats_temp < var_season_winter | float %}
+                true
+              {% elif stats_temp > var_season_summer | float %}
+                false
+              {% else %}
+                {{ states(var_season_mode_entity) == 'winter' }}
+              {% endif %}
+
+            # Unfavourable conditions per season
+            unfavourable: >
+              {% set out = outdoor_temp %}
+              {% set inn = indoor_temp %}
+              {% set w_low = var_winter_lower | float %}
+              {% set w_high = var_winter_upper | float %}
+              {% set offset = var_summer_offset | float %}
+              {% if is_summer %}
+                {{ out >= (inn - offset) }}
+              {% elif is_winter %}
+                {% if eco_on %}
+                  {{ out < w_high }}
+                {% else %}
+                  {{ out < w_low or out > w_high | float(99) }}
+                {% endif %}
+              {% else %}
+                false
+              {% endif %}
+
+        # ── Update season mode entity (only when auto-switch is enabled) ───────
+        - if:
+            - condition: template
+              value_template: "{{ var_season_auto_switch }}"
+          then:
+            - if:
+                - condition: template
+                  value_template: "{{ var_season_mode_entity.startswith('input_select.') }}"
+              then:
+                - service: input_select.select_option
+                  target:
+                    entity_id: "{{ var_season_mode_entity }}"
+                  data:
+                    option: "{{ 'summer' if is_summer else 'winter' }}"
+              else:
+                - service: input_text.set_value
+                  target:
+                    entity_id: "{{ var_season_mode_entity }}"
+                  data:
+                    value: "{{ 'summer' if is_summer else 'winter' }}"
+
+        # ── Update window recommendation entity ───────────────────────────────
+        - variables:
+            now_time: "{{ now().strftime('%H:%M:%S') }}"
+            in_morning: "{{ var_morning_start <= now_time < var_morning_end }}"
+            in_evening: "{{ var_evening_start <= now_time < var_evening_end }}"
+            _tracker_raw: >
+              {{ states(var_ventilation_tracker) if var_ventilation_tracker not in [{}, ''] else '{}' }}
+            _tracker_data: >
+              {{ _tracker_raw | from_json if _tracker_raw not in ['', 'unknown', 'unavailable', 'None'] else {} }}
+            _today: "{{ now().strftime('%Y-%m-%d') }}"
+            _morning_today: >
+              {{ _tracker_data.get('morning', 0) if _tracker_data.get('date') == _today else 0 }}
+            _evening_today: >
+              {{ _tracker_data.get('evening', 0) if _tracker_data.get('date') == _today else 0 }}
+            morning_quota_done: >
+              {{ in_morning
+                 and var_morning_target | int > 0
+                 and var_ventilation_tracker not in [{}, '']
+                 and _morning_today >= var_morning_target | int }}
+            evening_quota_done: >
+              {{ in_evening
+                 and var_evening_target | int > 0
+                 and var_ventilation_tracker not in [{}, '']
+                 and _evening_today >= var_evening_target | int }}
+            # In summer: recommend whenever conditions are favourable.
+            # In winter: recommend only within a ventilation window if its quota is not yet met.
+            should_open: >
+              {{ not unfavourable and (
+                   is_summer or (
+                     is_winter and (
+                       (in_morning and not morning_quota_done) or
+                       (in_evening and not evening_quota_done)
+                     )
+                   )
+                 ) }}
+        - if:
+            - condition: template
+              value_template: "{{ var_recommendation_entity not in [{}, ''] }}"
+          then:
+            - service: >
+                {{ 'input_boolean.turn_on' if should_open else 'input_boolean.turn_off' }}
+              target:
+                entity_id: "{{ var_recommendation_entity }}"
+
+        # If conditions are currently favourable, stop here
+        - condition: template
+          value_template: "{{ unfavourable }}"
+
+        # ── Alert delay ───────────────────────────────────────────────────────
+        - wait_for_trigger:
+            - platform: state
+              entity_id: !input window_sensors
+              to: "off"
+          timeout: !input delay_alert
+          continue_on_timeout: true
+
+        # If the window closed during the wait, stop
+        - condition: template
+          value_template: "{{ wait.trigger is none }}"
+
+        # Run alert action
+        - choose: []
+          default: !input action_alert
+
+mode: parallel
+max: 10

@@ -1,0 +1,260 @@
+blueprint:
+  name: "Air Purifier Schedule V1"
+  description: >
+    Controls an air purifier (fan domain entity) using a Home Assistant
+    schedule helper and a list of door/window contact sensors. The purifier
+    turns OFF whenever any monitored window or door is open. Otherwise the
+    schedule decides when it runs.
+
+    Each schedule block can carry an additional data field (default name
+    "mode") with one of these values: turbo, sleep, auto, manual. The
+    automation reads that attribute and applies the matching preset_mode on
+    the fan; for "manual" (or unknown / missing values) it falls back to a
+    configured percentage.
+  domain: automation
+  author: Scylla10
+  input:
+
+    # ── Section: Devices ──────────────────────────────────────────────────────
+
+    section_devices:
+      name: Devices
+      icon: mdi:air-purifier
+      input:
+
+        purifier_fan:
+          name: Air purifier
+          description: >
+            The fan entity representing the air purifier. The automation calls
+            fan.turn_on / fan.turn_off on this entity.
+          selector:
+            entity:
+              domain: fan
+
+        window_sensors:
+          name: Window / door sensors
+          description: >
+            One or more contact sensors (device_class window or door). When
+            ANY of them reports "on" (open) the purifier is turned off.
+          selector:
+            entity:
+              domain: binary_sensor
+              multiple: true
+              filter:
+                - device_class: window
+                - device_class: door
+
+        purifier_schedule:
+          name: Schedule helper
+          description: >
+            A Home Assistant schedule helper that defines when the purifier
+            should be running. Create it under Settings → Helpers → Schedule
+            and draw the desired time blocks. Add an additional data field
+            (see "Mode attribute" below) to control which preset / speed is
+            used for each block.
+          selector:
+            entity:
+              domain: schedule
+
+    # ── Section: Schedule modes ───────────────────────────────────────────────
+
+    section_modes:
+      name: Schedule modes
+      icon: mdi:tune-vertical
+      collapsed: true
+      input:
+
+        mode_attribute:
+          name: Mode attribute name
+          description: >
+            Name of the additional data field configured on each block of the
+            schedule helper. Recognised values written into this field:
+            "turbo", "sleep", "auto", "manual" (case-insensitive). Any other
+            value — or no value at all — falls back to manual mode using the
+            speed configured below.
+          default: "mode"
+          selector:
+            text:
+
+        preset_turbo:
+          name: Turbo preset_mode
+          description: >
+            The preset_mode string passed to fan.turn_on when the active
+            schedule block has mode = turbo. Common values: "Turbo", "High",
+            "Favorite". The exact string must match one of the values listed
+            in the fan entity's preset_modes attribute (Developer Tools →
+            States). Leave empty to disable turbo (falls back to manual).
+          default: ""
+          selector:
+            text:
+
+        preset_sleep:
+          name: Sleep preset_mode
+          description: >
+            The preset_mode string used when the active block has mode =
+            sleep. Common values: "Sleep", "Night", "Silent". Leave empty to
+            disable (falls back to manual).
+          default: ""
+          selector:
+            text:
+
+        preset_auto:
+          name: Auto preset_mode
+          description: >
+            The preset_mode string used when the active block has mode =
+            auto. Common values: "Auto", "Smart". Leave empty to disable
+            (falls back to manual).
+          default: ""
+          selector:
+            text:
+
+        manual_speed_percentage:
+          name: Manual speed (%)
+          description: >
+            Fan speed (as a percentage) used for "manual" mode and as the
+            fallback whenever the schedule block has no mode attribute, an
+            unknown value, or a recognised mode whose preset string above is
+            empty. On a typical 4-speed purifier the percentages map roughly
+            to 25 / 50 / 75 / 100, so the default 25 % corresponds to
+            "speed 1". Adjust to match your device.
+          default: 25
+          selector:
+            number:
+              min: 1
+              max: 100
+              step: 1
+              unit_of_measurement: "%"
+              mode: slider
+
+# ── Variables ─────────────────────────────────────────────────────────────────
+# Resolve !input references into template variables so they can be used inside
+# Jinja2 expressions.
+
+variables:
+  var_purifier_fan:      !input purifier_fan
+  var_window_sensors:    !input window_sensors
+  var_purifier_schedule: !input purifier_schedule
+  var_mode_attribute:    !input mode_attribute
+  var_preset_turbo:      !input preset_turbo
+  var_preset_sleep:      !input preset_sleep
+  var_preset_auto:       !input preset_auto
+  var_manual_speed:      !input manual_speed_percentage
+
+# ── Triggers ──────────────────────────────────────────────────────────────────
+
+trigger:
+  # Any monitored window/door opens
+  - platform: state
+    entity_id: !input window_sensors
+    to: "on"
+    id: window_opened
+
+  # Any monitored window/door closes – may be the last one
+  - platform: state
+    entity_id: !input window_sensors
+    to: "off"
+    id: window_closed
+
+  # Schedule starts (purifier should run if no window is open)
+  - platform: state
+    entity_id: !input purifier_schedule
+    to: "on"
+    id: schedule_on
+
+  # Schedule ends (purifier should stop)
+  - platform: state
+    entity_id: !input purifier_schedule
+    to: "off"
+    id: schedule_off
+
+  # Schedule transitions between adjacent blocks (state stays "on" but the
+  # mode attribute changes). next_event always updates on a block change.
+  - platform: state
+    entity_id: !input purifier_schedule
+    attribute: next_event
+    id: schedule_block_changed
+
+# ── Conditions ────────────────────────────────────────────────────────────────
+
+condition: []
+
+# ── Actions ───────────────────────────────────────────────────────────────────
+
+action:
+  - variables:
+      any_window_open: >
+        {{ expand(var_window_sensors)
+           | selectattr('state','eq','on') | list | count > 0 }}
+      schedule_active: "{{ is_state(var_purifier_schedule, 'on') }}"
+      should_run: "{{ schedule_active and not any_window_open }}"
+
+      # Read mode from the active schedule block. Empty / missing → manual.
+      schedule_mode: >
+        {{ (state_attr(var_purifier_schedule, var_mode_attribute) or 'manual')
+           | string | lower }}
+
+  - choose:
+
+      # ── Branch 1A: should run, mode = turbo ─────────────────────────────
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ should_run
+                 and schedule_mode == 'turbo'
+                 and var_preset_turbo != '' }}
+        sequence:
+          - service: fan.turn_on
+            target:
+              entity_id: "{{ var_purifier_fan }}"
+            data:
+              preset_mode: "{{ var_preset_turbo }}"
+
+      # ── Branch 1B: should run, mode = sleep ─────────────────────────────
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ should_run
+                 and schedule_mode == 'sleep'
+                 and var_preset_sleep != '' }}
+        sequence:
+          - service: fan.turn_on
+            target:
+              entity_id: "{{ var_purifier_fan }}"
+            data:
+              preset_mode: "{{ var_preset_sleep }}"
+
+      # ── Branch 1C: should run, mode = auto ──────────────────────────────
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ should_run
+                 and schedule_mode == 'auto'
+                 and var_preset_auto != '' }}
+        sequence:
+          - service: fan.turn_on
+            target:
+              entity_id: "{{ var_purifier_fan }}"
+            data:
+              preset_mode: "{{ var_preset_auto }}"
+
+      # ── Branch 1D: should run, manual / unknown / preset disabled ───────
+      - conditions:
+          - condition: template
+            value_template: "{{ should_run }}"
+        sequence:
+          - service: fan.turn_on
+            target:
+              entity_id: "{{ var_purifier_fan }}"
+            data:
+              percentage: "{{ var_manual_speed | int }}"
+
+      # ── Branch 2: should not run → turn OFF ─────────────────────────────
+      - conditions:
+          - condition: template
+            value_template: "{{ not should_run }}"
+        sequence:
+          - service: fan.turn_off
+            target:
+              entity_id: "{{ var_purifier_fan }}"
+
+mode: restart
