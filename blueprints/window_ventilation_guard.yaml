@@ -8,7 +8,7 @@ blueprint:
     as long as outdoor temperature is below indoor temperature minus a
     configurable offset.
   domain: automation
-  author: Scylla10
+  author: mhanzelka
   input:
 
     # ── Section: Sensors ───────────────────────────────────────────────────────

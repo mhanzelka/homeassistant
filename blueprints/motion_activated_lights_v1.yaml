@@ -1,0 +1,135 @@
+blueprint:
+  name: "Motion Activated Lights V1"
+  description: >
+    Turns one or more lights on when any of the selected motion / presence
+    sensors detects activity, and turns them off after a configurable delay
+    once ALL monitored sensors report no motion.
+
+    Optional "take control" mode controls behaviour when a light was already
+    on at the moment motion was first detected: when OFF (default) such
+    lights are left alone after the delay; when ON the automation turns
+    them off regardless.
+  domain: automation
+  author: mhanzelka
+  input:
+
+    # ── Section: Devices ──────────────────────────────────────────────────────
+
+    section_devices:
+      name: Devices
+      icon: mdi:motion-sensor
+      input:
+
+        motion_sensors:
+          name: Motion / presence sensors
+          description: >
+            One or more binary sensors. The lights turn on whenever ANY of
+            them switches to "on". The off-delay starts only after ALL of
+            them are "off".
+          selector:
+            entity:
+              domain: binary_sensor
+              multiple: true
+              filter:
+                - device_class: motion
+                - device_class: occupancy
+                - device_class: presence
+
+        lights:
+          name: Lights
+          description: >
+            One or more light entities to control.
+          selector:
+            entity:
+              domain: light
+              multiple: true
+
+    # ── Section: Behavior ─────────────────────────────────────────────────────
+
+    section_behavior:
+      name: Behavior
+      icon: mdi:cog-outline
+      collapsed: true
+      input:
+
+        no_motion_wait:
+          name: Wait time after no motion
+          description: >
+            How long all sensors must report no motion before the lights are
+            turned off. The countdown restarts whenever any sensor detects
+            motion again.
+          default:
+            hours: 0
+            minutes: 2
+            seconds: 0
+          selector:
+            duration:
+
+        take_control:
+          name: Take control
+          description: >
+            When ON, lights are turned off after the delay even if they were
+            already on before motion started. When OFF (default), lights
+            that were already on at the moment of detection are left alone
+            (assumed to be under manual / other control).
+          default: false
+          selector:
+            boolean:
+
+# ── Variables ─────────────────────────────────────────────────────────────────
+# Resolve !input references into template variables so they can be used inside
+# Jinja2 expressions.
+
+variables:
+  var_motion_sensors: !input motion_sensors
+  var_lights:         !input lights
+  var_take_control:   !input take_control
+
+# ── Triggers ──────────────────────────────────────────────────────────────────
+
+trigger:
+  # Any monitored motion / presence sensor reports activity
+  - platform: state
+    entity_id: !input motion_sensors
+    to: "on"
+
+# ── Conditions ────────────────────────────────────────────────────────────────
+
+condition: []
+
+# ── Actions ───────────────────────────────────────────────────────────────────
+
+action:
+  # Capture which lights were already on BEFORE we touch anything. Used later
+  # to decide whether the automation "owns" the lights for the auto-off step.
+  - variables:
+      lights_were_on: >
+        {{ expand(var_lights)
+           | selectattr('state','eq','on') | list | count > 0 }}
+
+  # Turn on the lights. light.turn_on without parameters is idempotent —
+  # already-on lights are not disturbed (no brightness / colour override).
+  - service: light.turn_on
+    target:
+      entity_id: !input lights
+
+  # Wait until ALL motion sensors report no motion.
+  - wait_template: >
+      {{ expand(var_motion_sensors)
+         | selectattr('state','eq','on') | list | count == 0 }}
+
+  # Configurable grace period. Combined with mode: restart, any new motion
+  # cancels the pending delay and starts the whole flow over.
+  - delay: !input no_motion_wait
+
+  # Turn off lights either when "take control" is enabled, or when none of
+  # the lights were already on at the moment motion was first detected.
+  - if:
+      - condition: template
+        value_template: "{{ var_take_control or not lights_were_on }}"
+    then:
+      - service: light.turn_off
+        target:
+          entity_id: !input lights
+
+mode: restart

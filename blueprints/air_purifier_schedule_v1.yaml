@@ -12,7 +12,7 @@ blueprint:
     the fan; for "manual" (or unknown / missing values) it falls back to a
     configured percentage.
   domain: automation
-  author: Scylla10
+  author: mhanzelka
   input:
 
     # ── Section: Devices ──────────────────────────────────────────────────────

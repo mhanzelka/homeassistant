@@ -25,6 +25,22 @@ Drives a `fan`-domain air purifier from a Home Assistant **schedule helper** and
 
 ---
 
+### Motion Activated Lights V1
+
+[![Open your Home Assistant instance and show the blueprint import dialog with this blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fmhanzelka%2Fhomeassistant%2Fmain%2Fblueprints%2Fmotion_activated_lights_v1.yaml)
+
+A simple motion / presence-driven lights blueprint. Pick one or more motion sensors and one or more lights — the blueprint turns the lights on when any sensor detects activity and turns them off after a configurable delay once **all** sensors are clear.
+
+- Lights turn on whenever **any** selected sensor switches to `on`. Already-on lights are left untouched (plain `light.turn_on` with no parameters — no brightness or colour override).
+- The off-delay starts only after **all** monitored sensors report no motion, and resets if any sensor detects motion again before it expires.
+- **Take control** (optional): when off (default), lights that were already on at the moment motion was first detected are left alone after the delay. When on, the automation turns the lights off regardless.
+
+**Inputs:** motion / presence sensors, lights, wait time after no motion (duration), take control toggle.
+
+**Setup:** pick the sensors and lights and set the delay — that's it. No helpers required.
+
+---
+
 ### Window Ventilation Guard
 
 > **Status: in development.** The YAML is in this repo but the blueprint isn't ready for general use yet — no one-click import button on purpose. Expect breaking changes; import only if you're ready to read the source.
@@ -54,6 +70,7 @@ If the button doesn't work (e.g. you haven't set up [My Home Assistant](https://
 1. Settings → Automations & Scenes → Blueprints → **Import Blueprint**.
 2. Paste the raw URL of the YAML file:
    - `https://raw.githubusercontent.com/mhanzelka/homeassistant/main/blueprints/air_purifier_schedule_v1.yaml`
+   - `https://raw.githubusercontent.com/mhanzelka/homeassistant/main/blueprints/motion_activated_lights_v1.yaml`
 
 ## License
 
