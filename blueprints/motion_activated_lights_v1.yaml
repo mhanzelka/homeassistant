@@ -102,6 +102,12 @@ condition: []
 action:
   # Capture which lights were already on BEFORE we touch anything. Used later
   # to decide whether the automation "owns" the lights for the auto-off step.
+  #
+  # IMPORTANT: With mode: single (see bottom of file) this snapshot is taken
+  # exactly once per activation cycle. A returning user during the grace
+  # period does NOT re-trigger the automation, so the value reflects the
+  # true pre-automation state and is never overwritten by lights that this
+  # automation itself turned on.
   - variables:
       lights_were_on: >
         {{ expand(var_lights)
@@ -113,14 +119,44 @@ action:
     target:
       entity_id: !input lights
 
-  # Wait until ALL motion sensors report no motion.
-  - wait_template: >
-      {{ expand(var_motion_sensors)
-         | selectattr('state','eq','on') | list | count == 0 }}
+  # ── Interruptible grace-period loop ────────────────────────────────────────
+  # The original implementation used a plain `delay` plus mode: restart. That
+  # combination has a subtle bug: when motion returns during the delay the
+  # whole script restarts, the `lights_were_on` snapshot is recaptured, and
+  # because the lights are now on (we just turned them on) the automation
+  # mistakenly believes the user is in control and never turns them off.
+  #
+  # Instead we keep mode: single and simulate a *cancelable* delay here:
+  #
+  #   1. wait_template — pause until ALL motion sensors are clear.
+  #   2. wait_for_trigger with `timeout` — wait the configured grace period,
+  #      but break out early if any motion sensor fires again.
+  #   3. The until-condition exits the loop only when the wait_for_trigger
+  #      ended via timeout (`wait.trigger == none`), i.e. the room really
+  #      stayed empty for the full grace period. Any earlier motion just
+  #      loops back to step 1 without losing the original `lights_were_on`.
+  - repeat:
+      sequence:
+        # Wait until ALL motion sensors report no motion.
+        - wait_template: >
+            {{ expand(var_motion_sensors)
+               | selectattr('state','eq','on') | list | count == 0 }}
 
-  # Configurable grace period. Combined with mode: restart, any new motion
-  # cancels the pending delay and starts the whole flow over.
-  - delay: !input no_motion_wait
+        # Cancelable grace period: completes either when the timeout elapses
+        # (success — nobody came back) or when a sensor reports motion again
+        # (loop continues). `continue_on_timeout: true` keeps the script
+        # running on timeout so we can inspect `wait.trigger`.
+        - wait_for_trigger:
+            - platform: state
+              entity_id: !input motion_sensors
+              to: "on"
+          timeout: !input no_motion_wait
+          continue_on_timeout: true
+      until:
+        # `wait.trigger` is the trigger object that fired, or `none` when
+        # the timeout elapsed. Only the timeout case ends the cycle.
+        - condition: template
+          value_template: "{{ wait.trigger == none }}"
 
   # Turn off lights either when "take control" is enabled, or when none of
   # the lights were already on at the moment motion was first detected.
@@ -132,4 +168,7 @@ action:
         target:
           entity_id: !input lights
 
-mode: restart
+# Single-run mode: while one cycle is in progress, additional motion events
+# are absorbed by the wait_for_trigger inside the loop above instead of
+# restarting the script (which would clobber `lights_were_on`).
+mode: single
