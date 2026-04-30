@@ -76,14 +76,35 @@ blueprint:
           selector:
             boolean:
 
+        disable_entities:
+          name: Disable entities (optional)
+          description: >
+            While ANY of these entities is "on", the automation will not
+            start a new cycle, and any currently running cycle is
+            interrupted (the controlled lights are turned off
+            immediately). Once ALL of them go back to "off" while motion
+            is still detected, the lights are turned on again and the
+            normal grace-period logic resumes. Typical use: a main
+            ceiling light that should override a motion-activated lamp.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: light
+                - domain: switch
+                - domain: input_boolean
+                - domain: binary_sensor
+
 # ── Variables ─────────────────────────────────────────────────────────────────
 # Resolve !input references into template variables so they can be used inside
 # Jinja2 expressions.
 
 variables:
-  var_motion_sensors: !input motion_sensors
-  var_lights:         !input lights
-  var_take_control:   !input take_control
+  var_motion_sensors:   !input motion_sensors
+  var_lights:           !input lights
+  var_take_control:     !input take_control
+  var_disable_entities: !input disable_entities
 
 # ── Triggers ──────────────────────────────────────────────────────────────────
 
@@ -92,10 +113,31 @@ trigger:
   - platform: state
     entity_id: !input motion_sensors
     to: "on"
+    id: motion
+  # A disable entity went back to off → maybe resume cycle
+  - platform: state
+    entity_id: !input disable_entities
+    to: "off"
+    id: disable
 
 # ── Conditions ────────────────────────────────────────────────────────────────
 
-condition: []
+condition:
+  # Motion trigger: skip if any disable entity is currently on.
+  # Disable trigger: skip unless ALL disable entities are off AND motion is
+  # currently active (otherwise there's nothing to resume).
+  - condition: template
+    value_template: >
+      {% set disable_on = (var_disable_entities | count > 0) and
+                          (expand(var_disable_entities)
+                            | selectattr('state','eq','on') | list | count > 0) %}
+      {% set motion_on  = expand(var_motion_sensors)
+                            | selectattr('state','eq','on') | list | count > 0 %}
+      {% if trigger.id == 'motion' %}
+        {{ not disable_on }}
+      {% else %}
+        {{ (not disable_on) and motion_on }}
+      {% endif %}
 
 # ── Actions ───────────────────────────────────────────────────────────────────
 
@@ -119,18 +161,58 @@ action:
   # out (`wait.trigger == none`), i.e. the room stayed empty.
   - repeat:
       sequence:
+        # Wait until motion clears OR a disable entity goes on.
         - wait_template: >
-            {{ expand(var_motion_sensors)
-               | selectattr('state','eq','on') | list | count == 0 }}
+            {% set motion_off = expand(var_motion_sensors)
+                                  | selectattr('state','eq','on')
+                                  | list | count == 0 %}
+            {% set disabled = (var_disable_entities | count > 0) and
+                              (expand(var_disable_entities)
+                                | selectattr('state','eq','on')
+                                | list | count > 0) %}
+            {{ motion_off or disabled }}
+
+        # If we exited because a disable entity is now on, stop immediately.
+        - if:
+            - condition: template
+              value_template: >
+                {{ (var_disable_entities | count > 0) and
+                   (expand(var_disable_entities)
+                     | selectattr('state','eq','on')
+                     | list | count > 0) }}
+          then:
+            - service: light.turn_off
+              target:
+                entity_id: !input lights
+            - stop: "Disabled by override entity"
+
         - wait_for_trigger:
             - platform: state
               entity_id: !input motion_sensors
+              to: "on"
+            - platform: state
+              entity_id: !input disable_entities
               to: "on"
           timeout: !input no_motion_wait
           continue_on_timeout: true
       until:
         - condition: template
-          value_template: "{{ wait.trigger == none }}"
+          value_template: >
+            {{ wait.trigger == none
+               or (wait.trigger is not none
+                   and wait.trigger.entity_id in var_disable_entities) }}
+
+  # Disable-on inside the grace-period wait → force off and stop.
+  - if:
+      - condition: template
+        value_template: >
+          {{ wait.trigger is not none
+             and wait.trigger.entity_id in var_disable_entities }}
+    then:
+      - service: light.turn_off
+        target:
+          entity_id: !input lights
+      - stop: "Disabled by override entity"
 
   # Turn off lights either when "take control" is enabled, or when none of
   # the lights were already on at the moment motion was first detected.
