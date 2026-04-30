@@ -100,8 +100,8 @@ condition: []
 # ── Actions ───────────────────────────────────────────────────────────────────
 
 action:
-  # Capture which lights were already on BEFORE we touch anything. Used later
-  # to decide whether the automation "owns" the lights for the auto-off step.
+  # Snapshot of which lights were already on before motion was detected.
+  # Used later to decide whether the automation owns them for auto-off.
   - variables:
       lights_were_on: >
         {{ expand(var_lights)
@@ -113,14 +113,24 @@ action:
     target:
       entity_id: !input lights
 
-  # Wait until ALL motion sensors report no motion.
-  - wait_template: >
-      {{ expand(var_motion_sensors)
-         | selectattr('state','eq','on') | list | count == 0 }}
-
-  # Configurable grace period. Combined with mode: restart, any new motion
-  # cancels the pending delay and starts the whole flow over.
-  - delay: !input no_motion_wait
+  # Cancelable grace period: wait until all sensors are clear, then wait
+  # the configured delay. New motion during the delay loops back instead
+  # of ending the cycle. The loop exits only when wait_for_trigger times
+  # out (`wait.trigger == none`), i.e. the room stayed empty.
+  - repeat:
+      sequence:
+        - wait_template: >
+            {{ expand(var_motion_sensors)
+               | selectattr('state','eq','on') | list | count == 0 }}
+        - wait_for_trigger:
+            - platform: state
+              entity_id: !input motion_sensors
+              to: "on"
+          timeout: !input no_motion_wait
+          continue_on_timeout: true
+      until:
+        - condition: template
+          value_template: "{{ wait.trigger == none }}"
 
   # Turn off lights either when "take control" is enabled, or when none of
   # the lights were already on at the moment motion was first detected.
@@ -132,4 +142,4 @@ action:
         target:
           entity_id: !input lights
 
-mode: restart
+mode: single
