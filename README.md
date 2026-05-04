@@ -15,13 +15,16 @@ Drives a `fan`-domain air purifier from a Home Assistant **schedule helper** and
 - The purifier is turned **off** whenever any monitored window or door is open.
 - Otherwise the schedule decides when it runs.
 - Each schedule block can carry an additional data field (default name `mode`) with one of: `turbo`, `sleep`, `auto`, `manual`. The automation reads it and applies the matching `preset_mode` on the fan; `manual` (or unknown / missing values) falls back to a configured percentage.
+- **External overrides (optional):** two `input_select` helpers driven from your own automations can override the schedule. Both expose the same options: `schedule` (= no override), `off`, `turbo`, `sleep`, `auto`, `manual`. The **hard** override wins absolutely (ignores windows and schedule). The **soft** override wins over the schedule but is blocked by an open window or by an active schedule block whose mode is `sleep`. Hard always wins over soft.
+- **Window debounce (hysteresis):** a configurable delay between any window/door state change and the resulting fan action (default 30 s, set to 0 to disable). Brief open/close bounces never reach the fan because the automation runs in `mode: restart` and re-evaluates after the delay.
 
-**Inputs:** purifier fan, window/door sensors, schedule helper, preset names for turbo/sleep/auto, manual fallback speed.
+**Inputs:** purifier fan, window/door sensors, schedule helper, preset names for turbo/sleep/auto, manual fallback speed, optional hard/soft override helpers, window debounce delay.
 
 **Setup:**
 1. Create a *Schedule* helper (Settings → Devices & Services → Helpers → Schedule) and draw the time blocks you want.
 2. On each block add an additional data field named `mode` (or whatever you configure in the blueprint) with one of `turbo` / `sleep` / `auto` / `manual`.
 3. Look up the exact `preset_modes` strings for your fan in Developer Tools → States and put them into the matching inputs. Leave a preset empty to disable it (that mode then falls back to manual).
+4. (Optional) For external overrides, create one or two *Dropdown* (`input_select`) helpers with options `schedule, off, turbo, sleep, auto, manual` (initial value `schedule`). Wire them into the *Hard override* / *Soft override* inputs and drive them from your automations via `input_select.select_option`.
 
 ---
 

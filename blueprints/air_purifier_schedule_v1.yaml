@@ -126,6 +126,73 @@ blueprint:
               unit_of_measurement: "%"
               mode: slider
 
+    # ── Section: External overrides ──────────────────────────────────────────
+
+    section_overrides:
+      name: External overrides
+      icon: mdi:remote
+      collapsed: true
+      input:
+
+        hard_override_entity:
+          name: Hard override (optional)
+          description: >
+            An input_select helper used as an absolute override. Required
+            options (case-insensitive): schedule, off, turbo, sleep, auto,
+            manual. "schedule" means no override (the purifier follows the
+            schedule + window logic). Any other value is force-applied
+            immediately and ignores BOTH open windows AND the schedule.
+            Designed to be controlled from your own automations. Pick exactly
+            one helper, or leave empty to disable.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: input_select
+
+        soft_override_entity:
+          name: Soft override (optional)
+          description: >
+            An input_select helper used as a polite override. Same option set
+            as the hard override. Active only when (a) no monitored window or
+            door is open AND (b) the currently active schedule block does not
+            have mode = sleep. Otherwise the override is ignored and the
+            purifier falls back to the schedule + window logic. The hard
+            override always wins when both are set. Pick exactly one helper,
+            or leave empty to disable.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: input_select
+
+    # ── Section: Behavior ────────────────────────────────────────────────────
+
+    section_behavior:
+      name: Behavior
+      icon: mdi:cog-outline
+      collapsed: true
+      input:
+
+        window_change_delay:
+          name: Window state debounce
+          description: >
+            Hysteresis on window/door changes: time to wait after any
+            monitored window or door switches state before applying the new
+            fan mode. Brief open/close events shorter than this delay leave
+            the purifier in its previous state — mode: restart cancels the
+            wait whenever another window event arrives. Applied symmetrically
+            in both directions (open → wait → off, close → wait → on).
+            Set to 0 to disable.
+          default:
+            hours: 0
+            minutes: 0
+            seconds: 30
+          selector:
+            duration:
+
 # ── Variables ─────────────────────────────────────────────────────────────────
 # Resolve !input references into template variables so they can be used inside
 # Jinja2 expressions.
@@ -139,6 +206,8 @@ variables:
   var_preset_sleep:      !input preset_sleep
   var_preset_auto:       !input preset_auto
   var_manual_speed:      !input manual_speed_percentage
+  var_hard_override:     !input hard_override_entity
+  var_soft_override:     !input soft_override_entity
 
 # ── Triggers ──────────────────────────────────────────────────────────────────
 
@@ -174,6 +243,16 @@ trigger:
     attribute: next_event
     id: schedule_block_changed
 
+  # Hard override entity changed (optional input — empty list = no trigger)
+  - platform: state
+    entity_id: !input hard_override_entity
+    id: hard_override_changed
+
+  # Soft override entity changed (optional input — empty list = no trigger)
+  - platform: state
+    entity_id: !input soft_override_entity
+    id: soft_override_changed
+
 # ── Conditions ────────────────────────────────────────────────────────────────
 
 condition: []
@@ -181,27 +260,81 @@ condition: []
 # ── Actions ───────────────────────────────────────────────────────────────────
 
 action:
+  # Hysteresis on window/door changes: when triggered by a window event,
+  # wait the configured delay before reading state and applying. Because
+  # the automation runs in mode: restart, any new event (another window
+  # change, schedule transition, override change) cancels the delay and
+  # re-evaluates from scratch — so brief open/close bounces never reach
+  # the fan.turn_on/off calls below.
+  - if:
+      - condition: template
+        value_template: >
+          {{ trigger is not none
+             and trigger.id in ['window_opened','window_closed'] }}
+    then:
+      - delay: !input window_change_delay
+
   - variables:
       any_window_open: >
         {{ expand(var_window_sensors)
            | selectattr('state','eq','on') | list | count > 0 }}
       schedule_active: "{{ is_state(var_purifier_schedule, 'on') }}"
-      should_run: "{{ schedule_active and not any_window_open }}"
 
       # Read mode from the active schedule block. Empty / missing → manual.
       schedule_mode: >
         {{ (state_attr(var_purifier_schedule, var_mode_attribute) or 'manual')
            | string | lower }}
 
+      # Read override entity states (first picked entity, or 'schedule' when
+      # the input was left empty / the entity is unavailable).
+      hard_override_state: >-
+        {%- set ents = expand(var_hard_override) | list -%}
+        {%- if ents | count > 0 and ents[0].state not in ['unknown','unavailable'] -%}
+          {{ ents[0].state | string | lower }}
+        {%- else -%}schedule{%- endif -%}
+      soft_override_state: >-
+        {%- set ents = expand(var_soft_override) | list -%}
+        {%- if ents | count > 0 and ents[0].state not in ['unknown','unavailable'] -%}
+          {{ ents[0].state | string | lower }}
+        {%- else -%}schedule{%- endif -%}
+
+      # Resolve the single mode the purifier should follow right now:
+      #   1. Hard override wins absolutely (ignores windows + schedule).
+      #   2. Soft override wins over the schedule, but is blocked by an open
+      #      window OR by an active schedule block whose mode is "sleep".
+      #   3. Otherwise: open window or no active block → off; active block →
+      #      use the block's mode (falling back to "manual").
+      effective_mode: >-
+        {%- set valid = ['off','turbo','sleep','auto','manual'] -%}
+        {%- if hard_override_state in valid -%}
+          {{ hard_override_state }}
+        {%- elif soft_override_state in valid
+                and not any_window_open
+                and not (schedule_active and schedule_mode == 'sleep') -%}
+          {{ soft_override_state }}
+        {%- elif any_window_open or not schedule_active -%}
+          off
+        {%- elif schedule_mode in valid -%}
+          {{ schedule_mode }}
+        {%- else -%}
+          manual
+        {%- endif -%}
+
   - choose:
 
-      # ── Branch 1A: should run, mode = turbo ─────────────────────────────
+      # ── Off ─────────────────────────────────────────────────────────────
       - conditions:
           - condition: template
-            value_template: >
-              {{ should_run
-                 and schedule_mode == 'turbo'
-                 and var_preset_turbo != '' }}
+            value_template: "{{ effective_mode == 'off' }}"
+        sequence:
+          - service: fan.turn_off
+            target:
+              entity_id: "{{ var_purifier_fan }}"
+
+      # ── Turbo (preset configured) ───────────────────────────────────────
+      - conditions:
+          - condition: template
+            value_template: "{{ effective_mode == 'turbo' and var_preset_turbo != '' }}"
         sequence:
           - service: fan.turn_on
             target:
@@ -209,13 +342,10 @@ action:
             data:
               preset_mode: "{{ var_preset_turbo }}"
 
-      # ── Branch 1B: should run, mode = sleep ─────────────────────────────
+      # ── Sleep (preset configured) ───────────────────────────────────────
       - conditions:
           - condition: template
-            value_template: >
-              {{ should_run
-                 and schedule_mode == 'sleep'
-                 and var_preset_sleep != '' }}
+            value_template: "{{ effective_mode == 'sleep' and var_preset_sleep != '' }}"
         sequence:
           - service: fan.turn_on
             target:
@@ -223,13 +353,10 @@ action:
             data:
               preset_mode: "{{ var_preset_sleep }}"
 
-      # ── Branch 1C: should run, mode = auto ──────────────────────────────
+      # ── Auto (preset configured) ────────────────────────────────────────
       - conditions:
           - condition: template
-            value_template: >
-              {{ should_run
-                 and schedule_mode == 'auto'
-                 and var_preset_auto != '' }}
+            value_template: "{{ effective_mode == 'auto' and var_preset_auto != '' }}"
         sequence:
           - service: fan.turn_on
             target:
@@ -237,24 +364,12 @@ action:
             data:
               preset_mode: "{{ var_preset_auto }}"
 
-      # ── Branch 1D: should run, manual / unknown / preset disabled ───────
-      - conditions:
-          - condition: template
-            value_template: "{{ should_run }}"
-        sequence:
-          - service: fan.turn_on
-            target:
-              entity_id: "{{ var_purifier_fan }}"
-            data:
-              percentage: "{{ var_manual_speed | int }}"
-
-      # ── Branch 2: should not run → turn OFF ─────────────────────────────
-      - conditions:
-          - condition: template
-            value_template: "{{ not should_run }}"
-        sequence:
-          - service: fan.turn_off
-            target:
-              entity_id: "{{ var_purifier_fan }}"
+    # ── Manual / unknown / preset-disabled fallback ───────────────────────
+    default:
+      - service: fan.turn_on
+        target:
+          entity_id: "{{ var_purifier_fan }}"
+        data:
+          percentage: "{{ var_manual_speed | int }}"
 
 mode: restart
