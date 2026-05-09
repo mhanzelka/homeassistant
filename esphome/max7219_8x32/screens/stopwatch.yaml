@@ -1,0 +1,77 @@
+# Stopwatch screen for the 32×8 matrix — MM:SS.T (tenths of a second).
+# Time is computed from millis() each frame, not ticked from a global,
+# so accuracy is independent of display refresh rate. Caps at 99:59.9
+# (the rendered value pins to that ceiling; the underlying accumulator
+# keeps growing if the user really lets it run that long).
+#
+# State globals (declared in matrix.yaml):
+#   stopwatch_start_ms — millis() at the start of the current run
+#   stopwatch_accum_ms — total ms accumulated across all earlier runs
+# State switch / button (also in matrix.yaml):
+#   switch.<device>_stopwatch_running — start / pause toggle
+#   button.<device>_stopwatch_reset   — zero the accumulator
+#
+# Layout (5 digits + colon + period, centered):
+#   D1 cols 5..7    (MM tens)
+#   D2 cols 9..11   (MM ones)
+#   colon col 13    (rows y+1, y+3)
+#   D3 cols 15..17  (SS tens)
+#   D4 cols 19..21  (SS ones)
+#   period col 22   (single pixel at row y+4)
+#   D5 cols 24..26  (tenths)
+
+substitutions:
+  stopwatch_render: |-
+    static const uint8_t DIGIT_3X5[10][5] = {
+      {0b111, 0b101, 0b101, 0b101, 0b111},  // 0
+      {0b010, 0b110, 0b010, 0b010, 0b111},  // 1
+      {0b111, 0b001, 0b111, 0b100, 0b111},  // 2
+      {0b111, 0b001, 0b111, 0b001, 0b111},  // 3
+      {0b101, 0b101, 0b111, 0b001, 0b001},  // 4
+      {0b111, 0b100, 0b111, 0b001, 0b111},  // 5
+      {0b111, 0b100, 0b111, 0b101, 0b111},  // 6
+      {0b111, 0b001, 0b010, 0b010, 0b010},  // 7
+      {0b111, 0b101, 0b111, 0b101, 0b111},  // 8
+      {0b111, 0b101, 0b111, 0b001, 0b111},  // 9
+    };
+    static const int X_POS[5] = {5, 9, 15, 19, 24};
+    const int Y_START = 2;
+
+    uint32_t now_ms;
+    if (id(stopwatch_running).state) {
+      now_ms = id(stopwatch_accum_ms) + (millis() - id(stopwatch_start_ms));
+    } else {
+      now_ms = id(stopwatch_accum_ms);
+    }
+    if (now_ms > 5999900) now_ms = 5999900;  // 99:59.9
+
+    uint32_t total_tenths   = now_ms / 100;
+    uint32_t total_seconds  = total_tenths / 10;
+    int tenths              = total_tenths % 10;
+    int seconds             = total_seconds % 60;
+    int minutes             = total_seconds / 60;
+    int digits[5] = {
+      minutes / 10, minutes % 10,
+      seconds / 10, seconds % 10,
+      tenths,
+    };
+
+    for (int d = 0; d < 5; d++) {
+      int dx = X_POS[d];
+      const uint8_t *rows = DIGIT_3X5[digits[d]];
+      for (int row = 0; row < 5; row++) {
+        uint8_t bits = rows[row];
+        for (int col = 0; col < 3; col++) {
+          if (bits & (1 << (2 - col))) {
+            it.draw_pixel_at(dx + col, Y_START + row, Color::WHITE);
+          }
+        }
+      }
+    }
+
+    // Colon between MM and SS
+    it.draw_pixel_at(13, Y_START + 1, Color::WHITE);
+    it.draw_pixel_at(13, Y_START + 3, Color::WHITE);
+
+    // Period between SS and tenths
+    it.draw_pixel_at(22, Y_START + 4, Color::WHITE);

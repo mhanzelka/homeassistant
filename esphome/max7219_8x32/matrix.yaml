@@ -22,6 +22,7 @@ packages:
   screen_counter: !include screens/counter.yaml
   screen_progress: !include screens/progress.yaml
   screen_time: !include screens/time.yaml
+  screen_stopwatch: !include screens/stopwatch.yaml
 
 
 spi:
@@ -66,6 +67,21 @@ globals:
     restore_value: no
     initial_value: '-1'
 
+  # Stopwatch: tracked via millis() rather than a 1 Hz tick global so
+  # tenths of a second are accurate and pause/resume doesn't drift.
+  # `start_ms` records when the most recent run began; `accum_ms` is
+  # the total elapsed time before that (across all earlier runs). The
+  # display computes "now" each frame from these two values plus
+  # `millis()` if the stopwatch is running.
+  - id: stopwatch_start_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+  - id: stopwatch_accum_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+
 font:
   # 8×8 grid pixel font — designed for retro LED/CRT rendering. `bpp: 1`
   # disables anti-aliasing so edges land on whole pixels (no thresholding
@@ -84,7 +100,7 @@ display:
     intensity: 5         # initial; overridden by `display_intensity` number from HA
     rotate_chip: 0       # flip to 90/180/270 or set flip_x: true if FC-16 modules show garbled output
     scroll_enable: false # we render frame-by-frame from the lambda; built-in scroll fights with our static screens
-    update_interval: 250ms
+    update_interval: 100ms  # 10 Hz — fast enough for the stopwatch's tenths-of-a-second digit
     lambda: |-
       if (!id(display_on).state) return;
 
@@ -132,6 +148,8 @@ display:
         ${progress_render}
       } else if (screen == "time") {
         ${time_render}
+      } else if (screen == "stopwatch") {
+        ${stopwatch_render}
       }
 
 # HA-controllable LED brightness (0-15). Persisted across reboots.
@@ -203,6 +221,7 @@ select:
       - "counter"
       - "progress"
       - "time"
+      - "stopwatch"
     initial_option: "window_and_door_openings"
 
   # Picks which icon the progress screen renders on the left. Adding a
@@ -241,6 +260,27 @@ switch:
     optimistic: true
     restore_mode: RESTORE_DEFAULT_ON
 
+  # Flip the entire 32×8 canvas 180° at runtime so the device can be
+  # wall-mounted either way. Combines per-chip rotation 180° (= 2) with
+  # chip-cascade reversal — together they give a full visual flip. The
+  # switch state survives reboots; on a fresh boot OFF means the
+  # default (rotate 0, reverse false) which the chips already have, so
+  # no action needs to fire on the OFF→OFF restore.
+  - platform: template
+    name: "Display Flipped"
+    id: display_flipped
+    icon: "mdi:flip-vertical"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on:
+      - lambda: |-
+          id(matrix_display).set_chip_orientation(2);
+          id(matrix_display).set_reverse(true);
+    on_turn_off:
+      - lambda: |-
+          id(matrix_display).set_chip_orientation(0);
+          id(matrix_display).set_reverse(false);
+
   # Marquee scroll for the text screen. When off, the configured alignment
   # is used; when on, text scrolls right→left if it overflows the canvas.
   - platform: template
@@ -260,16 +300,30 @@ switch:
     optimistic: true
     restore_mode: RESTORE_DEFAULT_OFF
 
+  # Stopwatch start/stop. Toggling stamps `start_ms` / accumulates the
+  # last run into `accum_ms`. The display reads both globals + millis()
+  # every frame, so accuracy is millis-level regardless of refresh rate.
+  - platform: template
+    name: "Stopwatch Running"
+    id: stopwatch_running
+    icon: "mdi:timer-outline"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on:
+      - lambda: |-
+          id(stopwatch_start_ms) = millis();
+    on_turn_off:
+      - lambda: |-
+          id(stopwatch_accum_ms) += (millis() - id(stopwatch_start_ms));
+
 interval:
-  # 1 Hz tick: increments the local global only — no HA traffic per tick.
+  # 1 Hz tick: bumps the counter screen's internal global when its
+  # auto-tick switch is on. The stopwatch does NOT use this — it's
+  # millis-based and computed each frame in the render lambda.
   - interval: 1s
     then:
-      - if:
-          condition:
-            switch.is_on: counter_auto_tick
-          then:
-            - lambda: |-
-                id(counter_internal) += 1;
+      - lambda: |-
+          if (id(counter_auto_tick).state) id(counter_internal) += 1;
 
   # Mirror the global back to HA every 30 s while ticking, so the HA UI
   # stays roughly in sync without 1 message per second.
@@ -281,6 +335,41 @@ interval:
           then:
             - lambda: |-
                 id(counter_value).publish_state((float) id(counter_internal));
+
+# Reset action for the stopwatch screen — zeros the accumulator and
+# rebases the start stamp to "now", which behaves correctly whether
+# the stopwatch is running or paused (running → restarts from 0,
+# paused → just zeros).
+button:
+  - platform: template
+    name: "Stopwatch Reset"
+    id: stopwatch_reset
+    icon: "mdi:restart"
+    on_press:
+      - lambda: |-
+          id(stopwatch_accum_ms) = 0;
+          id(stopwatch_start_ms) = millis();
+
+  # Generic "do something with the current screen" entry point.
+  # The HA orchestrator presses this when the user hits their
+  # configured context-action button. The dispatch knows about the
+  # active screen — extend the if-chain when adding context actions
+  # for new screens.
+  - platform: template
+    name: "Context Action"
+    id: context_action
+    icon: "mdi:gesture-tap"
+    on_press:
+      - lambda: |-
+          const std::string &screen = id(active_screen).state;
+          if (screen == "stopwatch") {
+            if (id(stopwatch_running).state) {
+              id(stopwatch_running).turn_off();
+            } else {
+              id(stopwatch_running).turn_on();
+            }
+          }
+          // Future: add `else if (screen == "...")` for other screens.
 
 # Free-form text shown by the text screen.
 text:
