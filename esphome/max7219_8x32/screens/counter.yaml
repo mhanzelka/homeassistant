@@ -1,0 +1,41 @@
+# Three-level visual counter on the 32×8 matrix.
+# Reads `id(counter_value)` (HA `number`, 0..108000).
+#
+# Layout (vertically centered around the 2-row middle block):
+#   row 0:    top padding
+#   row 1:    Block 1 — 1 dot per unit, cycles every 30 units
+#   row 2:    gap
+#   row 3-4:  Block 2 — 1 dot per 30-unit tick, fills col-by-col top→bot,
+#             cycles every 60 ticks (= 1800 units)
+#   row 5:    gap
+#   row 6:    Block 3 — 1 dot per 1800-unit (= 30 min) tick, single-row,
+#             accumulates without cycling, capped at 30 dots (= 15 h)
+#   row 7:    bottom padding
+#
+# 1-col left and right margins keep the 30-col blocks centered horizontally.
+
+substitutions:
+  counter_render: |-
+    int n = id(counter_internal);
+    if (n < 0) n = 0;
+
+    // Block 1 — row 1, cycles 0..29
+    int b1 = n % 30;
+    for (int i = 0; i < b1; i++) {
+      it.draw_pixel_at(1 + i, 1, Color::WHITE);
+    }
+
+    // Block 2 — rows 3 (top) and 4 (bottom), cycles 0..59
+    int b2 = (n / 30) % 60;
+    for (int i = 0; i < b2; i++) {
+      int col = 1 + (i / 2);
+      int row = (i % 2) == 0 ? 3 : 4;
+      it.draw_pixel_at(col, row, Color::WHITE);
+    }
+
+    // Block 3 — single row 6, left-to-right, capped at 30
+    int b3 = n / 1800;
+    if (b3 > 30) b3 = 30;
+    for (int i = 0; i < b3; i++) {
+      it.draw_pixel_at(1 + i, 6, Color::WHITE);
+    }

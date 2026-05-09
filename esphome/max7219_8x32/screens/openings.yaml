@@ -1,0 +1,40 @@
+# Openings screen for the 32×8 MAX7219 matrix.
+# Reads slot states from the `slot_state_0..4` globals defined in
+# matrix.yaml. The HA service `esphome.<device>.set_openings` writes
+# those globals — the device no longer subscribes to specific HA
+# binary_sensors directly, so the user can rewire which sensors map to
+# which slot purely from a HA automation.
+#
+# State encoding per slot (integer):
+#   -1 = unknown (HA hasn't pushed yet) → horizontal line
+#    0 = closed                          → outline rectangle (calm)
+#    1 = open                            → filled rectangle (alert)
+#
+# Layout (32 × 8): five 4-wide × 6-tall door icons centered both ways.
+# Horizontal: 2-col padding on both sides + 2-col gap between boxes
+# (step = 6 cols, starting at x = 2).
+# Vertical: 1-row padding top and bottom (box rows 1..6).
+
+substitutions:
+  openings_render: |-
+    int *slots[5] = {
+      &id(slot_state_0), &id(slot_state_1), &id(slot_state_2),
+      &id(slot_state_3), &id(slot_state_4),
+    };
+
+    for (int i = 0; i < 5; i++) {
+      int s = *slots[i];
+      // Reverse mapping: slot 0 (first entity) renders at the right-hand
+      // end of the firmware canvas (x = 26). The FC-16 chip cascade is
+      // physically wired such that firmware x = 0 ends up on the right
+      // side of the strip, so this inversion makes the first entity
+      // appear on the left as humans read it.
+      int x = 26 - i * 6;  // boxes at x = 26, 20, 14, 8, 2
+      if (s < 0) {
+        it.line(x, 3, x + 3, 3);
+      } else if (s == 1) {
+        it.filled_rectangle(x, 1, 4, 6);
+      } else {
+        it.rectangle(x, 1, 4, 6);
+      }
+    }

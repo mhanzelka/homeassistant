@@ -1,0 +1,13 @@
+# Shared boilerplate for all ESPHome devices in this repo.
+# Imported as a package from the per-device main YAML.
+
+logger:
+
+ota:
+  - platform: esphome
+
+captive_portal:
+
+api:
+  encryption:
+    key: !secret api_key

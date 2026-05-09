@@ -1,0 +1,31 @@
+# Pre-defined 8×8 pixel icon catalog for the progress screen.
+# Each icon is an 8-byte array (one byte per row, MSB = leftmost column).
+#
+# To add a new icon:
+#   1. Add `static const uint8_t ICON_<NAME>[8] = {...};` below.
+#   2. Add `if (name == "<name>") return ICON_<NAME>;` to `lookup_icon`.
+#   3. Append "<name>" to `select.progress_icon.options` in matrix.yaml.
+#
+# This file exposes a single substitution `icons_lookup_fn` which, when
+# expanded inside another lambda, declares the icon constants and a
+# `lookup_icon(name)` helper. Callers use it like:
+#
+#   ${icons_lookup_fn}
+#   const uint8_t *icon = lookup_icon(id(progress_icon).state);
+
+substitutions:
+  icons_lookup_fn: |-
+    static const uint8_t ICON_PRINTER[8] = {
+      0xFF,  // ########  gantry / X-axis crossbar
+      0x18,  // ...##...  pipe descending from gantry
+      0x3C,  // ..####..  extruder body
+      0x3C,  // ..####..  extruder body
+      0x18,  // ...##...  nozzle narrowing down
+      0x18,  // ...##...  nozzle tip / extruded line
+      0x7E,  // .######.  object on the bed
+      0xFF,  // ########  print bed
+    };
+    auto lookup_icon = [](const std::string &name) -> const uint8_t * {
+      if (name == "printer") return ICON_PRINTER;
+      return nullptr;
+    };

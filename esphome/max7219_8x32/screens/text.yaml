@@ -1,0 +1,38 @@
+# Text screen for the 32×8 matrix.
+# Reads three HA entities defined in matrix.yaml:
+#   - text:   text_screen_content     (string)
+#   - select: text_screen_align       ("left" / "center" / "right")
+#   - switch: text_screen_scrolling   (bool)
+#
+# Layout: single line, vertically centered (TextAlign defaults to TOP, but
+# the 8-px font fills the 8-row canvas anyway). Scroll wraps the text from
+# right to left with a screen-width gap before repeating.
+
+substitutions:
+  text_render: |-
+    const std::string &text = id(text_screen_content).state;
+    const char *str = text.c_str();
+    const std::string &align = id(text_screen_align).state;
+    bool scrolling = id(text_screen_scrolling).state;
+
+    int text_w, x_off, y_off, text_h;
+    it.get_text_bounds(0, 0, str, id(matrix_font), TextAlign::TOP_LEFT,
+                       &x_off, &y_off, &text_w, &text_h);
+
+    if (scrolling && text_w > it.get_width()) {
+      // Marquee: text + screen-width gap, scrolls 1 px every 150 ms (~6.5 px/s).
+      int total = text_w + it.get_width();
+      int offset = (millis() / 150) % total;
+      it.print(it.get_width() - offset, 0, id(matrix_font), str);
+    } else {
+      TextAlign ta = TextAlign::TOP_CENTER;
+      int x = it.get_width() / 2;
+      if (align == "left") {
+        ta = TextAlign::TOP_LEFT;
+        x = 0;
+      } else if (align == "right") {
+        ta = TextAlign::TOP_RIGHT;
+        x = it.get_width();
+      }
+      it.print(x, 0, id(matrix_font), ta, str);
+    }

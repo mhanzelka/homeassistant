@@ -1,0 +1,42 @@
+# Generic progress screen for the 32×8 MAX7219 matrix.
+# Renders an 8×8 icon (cols 0-7) + a progress bar (cols 9-31). Both
+# inputs are HA-driven — the device has no idea what's being tracked:
+#
+#   - `select.<device>_progress_icon` — picks an icon from the
+#     `icons/icons.yaml` catalog by name. Unknown names render no icon.
+#   - `number.<device>_progress_value` — 0-100 percentage, drives the
+#     bar fill width.
+#
+# The HA automation that tracks the underlying source (e.g. a 3D
+# printer's progress sensor) writes both entities and switches
+# `select.<device>_active_screen` to "progress" when the screen
+# should be shown.
+
+substitutions:
+  progress_render: |-
+    ${icons_lookup_fn}
+
+    const uint8_t *icon = lookup_icon(id(progress_icon).state);
+    if (icon != nullptr) {
+      for (int row = 0; row < 8; row++) {
+        for (int col = 0; col < 8; col++) {
+          if (icon[row] & (1 << (7 - col))) {
+            it.draw_pixel_at(col, row, Color::WHITE);
+          }
+        }
+      }
+    }
+
+    float progress = id(progress_value).has_state()
+                     ? id(progress_value).state : 0.0f;
+    if (progress < 0.0f) progress = 0.0f;
+    if (progress > 100.0f) progress = 100.0f;
+
+    // Bar frame (cols 9..31, rows 1..6 inclusive = 23×6).
+    it.rectangle(9, 1, 23, 6, Color::WHITE);
+
+    // Fill inside the frame (interior 21×4 starting at col 10, row 2).
+    int fill_w = (int) (progress * 21.0f / 100.0f);
+    if (fill_w > 0) {
+      it.filled_rectangle(10, 2, fill_w, 4, Color::WHITE);
+    }

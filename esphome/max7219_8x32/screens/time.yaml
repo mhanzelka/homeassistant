@@ -1,0 +1,68 @@
+# Time screen for the 32×8 matrix.
+# Renders the current `HH:MM` from the `ha_time` component using a
+# hand-drawn 3×5 pixel digit bitmap. TTF rasterization (Silkscreen,
+# Press Start 2P at non-design sizes) kept producing artifacts and
+# off-by-N vertical offsets, so a fixed bitmap is the most reliable
+# option on this 32×8 canvas.
+#
+# Layout:
+#   y_start = 2        (5 rows tall + 2 rows top pad + 1 row bottom pad)
+#   D1 cols 7..9       (HH tens)
+#   D2 cols 11..13     (HH ones)
+#   colon col 15       (rows y+1 and y+3)
+#   D3 cols 17..19     (MM tens)
+#   D4 cols 21..23     (MM ones)
+#   total content = cols 7..23 (17 cols), centered with ~7 cols margin
+
+substitutions:
+  time_render: |-
+    static const uint8_t DIGIT_3X5[10][5] = {
+      {0b111, 0b101, 0b101, 0b101, 0b111},  // 0
+      {0b010, 0b110, 0b010, 0b010, 0b111},  // 1
+      {0b111, 0b001, 0b111, 0b100, 0b111},  // 2
+      {0b111, 0b001, 0b111, 0b001, 0b111},  // 3
+      {0b101, 0b101, 0b111, 0b001, 0b001},  // 4
+      {0b111, 0b100, 0b111, 0b001, 0b111},  // 5
+      {0b111, 0b100, 0b111, 0b101, 0b111},  // 6
+      {0b111, 0b001, 0b010, 0b010, 0b010},  // 7
+      {0b111, 0b101, 0b111, 0b101, 0b111},  // 8
+      {0b111, 0b101, 0b111, 0b001, 0b111},  // 9
+    };
+    static const int X_POS[4] = {7, 11, 17, 21};
+    const int Y_START = 2;
+
+    auto t = id(ha_time).now();
+
+    if (!t.is_valid()) {
+      // Placeholder "--:--" — horizontal dashes in the middle row of
+      // each digit cell, plus the static colon below.
+      for (int d = 0; d < 4; d++) {
+        int dx = X_POS[d];
+        it.line(dx, Y_START + 2, dx + 2, Y_START + 2, Color::WHITE);
+      }
+      it.draw_pixel_at(15, Y_START + 1, Color::WHITE);
+      it.draw_pixel_at(15, Y_START + 3, Color::WHITE);
+      return;
+    }
+
+    int digits[4] = {
+      t.hour / 10, t.hour % 10,
+      t.minute / 10, t.minute % 10,
+    };
+
+    for (int d = 0; d < 4; d++) {
+      int dx = X_POS[d];
+      const uint8_t *rows = DIGIT_3X5[digits[d]];
+      for (int row = 0; row < 5; row++) {
+        uint8_t bits = rows[row];
+        for (int col = 0; col < 3; col++) {
+          if (bits & (1 << (2 - col))) {
+            it.draw_pixel_at(dx + col, Y_START + row, Color::WHITE);
+          }
+        }
+      }
+    }
+
+    // Colon dots at col 15 (between HH and MM)
+    it.draw_pixel_at(15, Y_START + 1, Color::WHITE);
+    it.draw_pixel_at(15, Y_START + 3, Color::WHITE);
