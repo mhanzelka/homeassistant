@@ -76,6 +76,49 @@ blueprint:
           selector:
             boolean:
 
+        motion_schedule:
+          name: Active schedule (optional)
+          description: >
+            A Home Assistant schedule helper that restricts when motion
+            activates the lights. Motion is processed only while this
+            schedule is "on" — outside its blocks, motion is ignored.
+            Create one under Settings → Helpers → Schedule. Leave empty
+            to disable scheduling (motion always works).
+          default: {}
+          selector:
+            entity:
+              domain: schedule
+
+        illuminance_sensor:
+          name: Illuminance sensor (optional)
+          description: >
+            A sensor reporting illuminance in lux. When configured, motion
+            only turns the lights on if ALL controlled lights are currently
+            off AND the sensor reads below the lux threshold. Once any
+            light is on, the lux check is skipped (the sensor would be
+            polluted by the lights themselves). Leave empty to disable the
+            lux gate.
+          default: {}
+          selector:
+            entity:
+              domain: sensor
+              device_class: illuminance
+
+        lux_threshold:
+          name: Lux threshold
+          description: >
+            Minimum illuminance (lux) below which motion is allowed to turn
+            the lights on. Only applies when an illuminance sensor is
+            configured and all controlled lights are currently off.
+          default: 50
+          selector:
+            number:
+              min: 0
+              max: 1000
+              step: 1
+              unit_of_measurement: "lx"
+              mode: slider
+
         disable_entities:
           name: Disable entities (optional)
           description: >
@@ -101,10 +144,13 @@ blueprint:
 # Jinja2 expressions.
 
 variables:
-  var_motion_sensors:   !input motion_sensors
-  var_lights:           !input lights
-  var_take_control:     !input take_control
-  var_disable_entities: !input disable_entities
+  var_motion_sensors:     !input motion_sensors
+  var_lights:             !input lights
+  var_take_control:       !input take_control
+  var_disable_entities:   !input disable_entities
+  var_motion_schedule:    !input motion_schedule
+  var_illuminance_sensor: !input illuminance_sensor
+  var_lux_threshold:      !input lux_threshold
 
 # ── Triggers ──────────────────────────────────────────────────────────────────
 
@@ -133,10 +179,19 @@ condition:
                             | selectattr('state','eq','on') | list | count > 0) %}
       {% set motion_on  = expand(var_motion_sensors)
                             | selectattr('state','eq','on') | list | count > 0 %}
+      {% set schedule_ok = (var_motion_schedule in [{}, '', none]) or
+                           is_state(var_motion_schedule, 'on') %}
+      {% set lights_all_off = expand(var_lights)
+                                | selectattr('state','eq','on')
+                                | list | count == 0 %}
+      {% set lux_ok = (var_illuminance_sensor in [{}, '', none])
+                      or (not lights_all_off)
+                      or (states(var_illuminance_sensor) | float(99999)
+                          < var_lux_threshold | float) %}
       {% if trigger.id == 'motion' %}
-        {{ not disable_on }}
+        {{ (not disable_on) and schedule_ok and lux_ok }}
       {% else %}
-        {{ (not disable_on) and motion_on }}
+        {{ (not disable_on) and motion_on and schedule_ok and lux_ok }}
       {% endif %}
 
 # ── Actions ───────────────────────────────────────────────────────────────────

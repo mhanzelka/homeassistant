@@ -1,0 +1,336 @@
+blueprint:
+  name: "Display Orchestrator V1"
+  description: >
+    Drives an ESPHome status display that exposes two HA entities — a
+    `switch` for power on/off and a `select` for the currently shown
+    screen. Combines three independent inputs into a single controller:
+
+    1. A schedule helper decides when the display is allowed to be on.
+       When the schedule is OFF, the switch is turned off and the active
+       screen is left alone (it'll be re-applied next time the display
+       turns back on).
+
+    2. While the display is on, an open window or door switches the
+       active screen to the configured "openings" screen. Window state
+       has the highest priority.
+
+    3. With no window open, a non-zero 3D-printer progress sensor
+       switches the active screen to the configured "printer" screen.
+
+    When neither windows nor printer are active and a default screen is
+    configured, the screen reverts to that default — otherwise it's
+    left untouched and the user can switch manually via HA.
+
+    The `window_sensors` list serves a dual purpose: it's used both to
+    decide whether to switch to the openings screen ("any open") and,
+    when an "Openings text entity" is configured, to push a per-slot
+    state string ("1,0,1,0,0") to the device. The first sensor in the
+    list maps to the device's slot 0, the second to slot 1, and so on.
+  domain: automation
+  author: mhanzelka
+  input:
+
+    # ── Section: Devices ──────────────────────────────────────────────────────
+
+    section_devices:
+      name: Devices
+      icon: mdi:monitor-dashboard
+      input:
+
+        display_switch:
+          name: Display on/off switch
+          description: >
+            The ESPHome switch that powers the display on or off. For the
+            ESPHome matrix device this is `switch.<device>_display_on`.
+          selector:
+            entity:
+              domain: switch
+
+        active_screen:
+          name: Active screen select
+          description: >
+            The ESPHome select entity that picks which screen is rendered.
+            For the matrix device this is `select.<device>_active_screen`.
+          selector:
+            entity:
+              domain: select
+
+        openings_text_entity:
+          name: Openings text entity (optional)
+          description: >
+            The ESPHome `text` entity that accepts comma-separated opening
+            states ("1,0,1,0,0"). For the matrix device this is
+            `text.<device>_openings`. When configured, this blueprint
+            pushes the current state of the window sensors below — in
+            their selection order — to that entity on every change.
+            Leave empty if the device does not need per-slot pushes.
+          default: []
+          selector:
+            entity:
+              multiple: false
+              domain: text
+
+    # ── Section: Schedule ─────────────────────────────────────────────────────
+
+    section_schedule:
+      name: On/off schedule
+      icon: mdi:calendar-clock
+      input:
+
+        on_schedule:
+          name: Display ON schedule
+          description: >
+            Home Assistant schedule helper that defines the time blocks
+            during which the display should be ON. Outside those blocks
+            the display switch is turned off. Create it under Settings →
+            Helpers → Schedule.
+          selector:
+            entity:
+              domain: schedule
+
+    # ── Section: 3D printer ───────────────────────────────────────────────────
+
+    section_printer:
+      name: 3D printer
+      icon: mdi:printer-3d
+      collapsed: true
+      input:
+
+        printer_progress_sensor:
+          name: Printer progress sensor (optional)
+          description: >
+            Sensor reporting print progress as a percentage (0-100). When
+            the value is above the threshold below, the active screen is
+            switched to the printer screen. Leave empty to disable the
+            printer behaviour.
+          default: []
+          selector:
+            entity:
+              multiple: false
+              domain: sensor
+
+        printer_screen_option:
+          name: Printer screen option name
+          description: >
+            The exact `select.options` value that renders the 3D-printer
+            screen. Must match one of the options on the configured
+            select entity (case-sensitive).
+          default: "printer"
+          selector:
+            text:
+
+        printer_active_threshold:
+          name: Printing threshold (%)
+          description: >
+            Progress percentage strictly above which the printer is
+            considered to be actively printing. Use 0 to trigger on any
+            non-zero value (default), or e.g. 1 if the sensor reports
+            tiny non-zero readings while idle.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 1
+              unit_of_measurement: "%"
+              mode: slider
+
+    # ── Section: Windows / doors ──────────────────────────────────────────────
+
+    section_windows:
+      name: Windows / doors
+      icon: mdi:window-open-variant
+      collapsed: true
+      input:
+
+        window_sensors:
+          name: Window / door sensors (optional)
+          description: >
+            One or more contact sensors. When ANY of them reports "on"
+            (open) the active screen flips to the openings screen.
+            Leave empty to disable the windows behaviour.
+
+            **Order matters when an "Openings text entity" is set
+            above** — the first sensor here maps to slot 0 of the
+            display, the second to slot 1, and so on. Pick them in the
+            order you want them shown left-to-right on the device.
+          default: []
+          selector:
+            entity:
+              domain: binary_sensor
+              multiple: true
+              filter:
+                - device_class: window
+                - device_class: door
+
+        windows_screen_option:
+          name: Openings screen option name
+          description: >
+            The exact `select.options` value that renders the openings /
+            windows screen. Must match one of the options on the
+            configured select entity (case-sensitive).
+          default: "window_and_door_openings"
+          selector:
+            text:
+
+    # ── Section: Default ──────────────────────────────────────────────────────
+
+    section_default:
+      name: Default screen
+      icon: mdi:monitor
+      collapsed: true
+      input:
+
+        default_screen_option:
+          name: Default screen option (optional)
+          description: >
+            The screen to show when no window is open and the printer is
+            idle. Must match one of the options on the configured select
+            entity. Leave empty to leave the screen untouched in that
+            case (the user keeps whatever they selected manually).
+          default: ""
+          selector:
+            text:
+
+# ── Variables ─────────────────────────────────────────────────────────────────
+# Resolve !input references into template variables so they can be used inside
+# Jinja2 expressions.
+
+variables:
+  var_display_switch:        !input display_switch
+  var_active_screen:         !input active_screen
+  var_on_schedule:           !input on_schedule
+  var_printer_sensor:        !input printer_progress_sensor
+  var_printer_screen:        !input printer_screen_option
+  var_printer_threshold:     !input printer_active_threshold
+  var_window_sensors:        !input window_sensors
+  var_windows_screen:        !input windows_screen_option
+  var_default_screen:        !input default_screen_option
+  var_openings_text:         !input openings_text_entity
+
+# ── Triggers ──────────────────────────────────────────────────────────────────
+
+trigger:
+  # Schedule starts (display should turn on)
+  - platform: state
+    entity_id: !input on_schedule
+    to: "on"
+    id: schedule_on
+
+  # Schedule ends (display should turn off)
+  - platform: state
+    entity_id: !input on_schedule
+    to: "off"
+    id: schedule_off
+
+  # Any monitored window/door opens
+  - platform: state
+    entity_id: !input window_sensors
+    to: "on"
+    id: window_opened
+
+  # Any monitored window/door closes — may be the last one
+  - platform: state
+    entity_id: !input window_sensors
+    to: "off"
+    id: window_closed
+
+  # Printer progress changed (started, finished, or in-progress update)
+  - platform: state
+    entity_id: !input printer_progress_sensor
+    id: printer_changed
+
+  # Device just reconnected to HA (boot, OTA reflash, WiFi drop, USB
+  # unplug/replug). This is purely about availability — the destination
+  # state of the watched entity is irrelevant, only that it transitioned
+  # away from "unavailable". When the device reconnects, all of its
+  # entities flip out of "unavailable" together, so any of them works as
+  # the indicator; we use `display_switch` because we already accept it
+  # as an input. After this trigger we re-push the current window states
+  # and force the openings screen so the user sees a known good view
+  # immediately after recovery, regardless of any other condition.
+  - platform: state
+    entity_id: !input display_switch
+    from: "unavailable"
+    id: display_available
+
+# ── Conditions ────────────────────────────────────────────────────────────────
+
+condition: []
+
+# ── Actions ───────────────────────────────────────────────────────────────────
+
+action:
+  - variables:
+      schedule_on: "{{ is_state(var_on_schedule, 'on') }}"
+
+      # Any monitored window currently open
+      any_window_open: >
+        {{ expand(var_window_sensors)
+           | selectattr('state','eq','on') | list | count > 0 }}
+
+      # Read printer progress (0 when sensor not configured / unavailable)
+      printer_progress: >-
+        {%- set ents = expand(var_printer_sensor) | list -%}
+        {%- if ents | count > 0
+                and ents[0].state not in ['unknown','unavailable','none','None'] -%}
+          {{ ents[0].state | float(0) }}
+        {%- else -%}0{%- endif -%}
+      printer_active: >-
+        {{ printer_progress | float(0) > var_printer_threshold | float(0) }}
+
+      # Resolve the screen we want shown right now (only meaningful when
+      # the display is on). Priority: device-recovery → windows >
+      # printer > default. Empty string means "leave the current
+      # selection untouched". When the device just came back online
+      # (`display_available` trigger) we always force the openings
+      # screen so the user sees a known good view after a boot / OTA
+      # / reconnect, regardless of current window or printer state.
+      target_screen: >-
+        {%- if trigger is not none and trigger.id == 'display_available' -%}
+          {{ var_windows_screen }}
+        {%- elif any_window_open -%}{{ var_windows_screen }}
+        {%- elif printer_active -%}{{ var_printer_screen }}
+        {%- else -%}{{ var_default_screen }}
+        {%- endif -%}
+
+  # ── Push per-slot openings to the device's text entity (when set) ────────
+  # Builds a comma-separated string from `window_sensors` in selection
+  # order. The device parses anything other than "1"/"0" (e.g. "?") as
+  # the unknown indicator, so HA "unavailable" / "unknown" map cleanly.
+  - if:
+      - condition: template
+        value_template: "{{ var_openings_text not in [{}, '', none] }}"
+    then:
+      - variables:
+          openings_string: >-
+            {{ expand(var_window_sensors)
+               | map(attribute='state')
+               | map('replace', 'unavailable', '?')
+               | map('replace', 'unknown', '?')
+               | map('replace', 'on', '1')
+               | map('replace', 'off', '0')
+               | join(',') }}
+      - service: text.set_value
+        target:
+          entity_id: "{{ var_openings_text }}"
+        data:
+          value: "{{ openings_string }}"
+
+  # ── Display power: schedule wins ─────────────────────────────────────────
+  - service: "{{ 'switch.turn_on' if schedule_on else 'switch.turn_off' }}"
+    target:
+      entity_id: "{{ var_display_switch }}"
+
+  # ── Active screen: only meaningful while the display is on ───────────────
+  - if:
+      - condition: template
+        value_template: "{{ schedule_on and target_screen != '' }}"
+    then:
+      - service: select.select_option
+        target:
+          entity_id: "{{ var_active_screen }}"
+        data:
+          option: "{{ target_screen }}"
+
+mode: restart
