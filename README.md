@@ -53,9 +53,9 @@ Designed to drive the ESPHome [`max7219_8x32`](esphome/max7219_8x32/) device tha
 It exposes a `switch` for power on/off and a `select` for the active screen, then combines a schedule, a list of window/door sensors and a 3D-printer progress sensor into a single controller.
 
 - A schedule helper decides when the display is allowed to be on; outside its blocks the switch is forced off and the active screen is left alone.
-- While the display is on, an open window/door switches the active screen to the configured **openings** screen (highest priority).
-- With no window open, a non-zero printer progress sensor switches to the configured **progress** screen.
+- While the display is on, priority order is **printer > windows > stopwatch > default**: a non-zero printer progress sensor wins even with a window open; otherwise an open window/door wins; otherwise a running stopwatch wins; otherwise the configured default fallback is shown.
 - Falls back to a configurable default screen, or leaves the current selection alone if none is configured.
+- **Manual cycle override (optional):** when an `input_button` and a 10-second `timer` helper are configured, pressing the button advances `select.<device>_active_screen` to the next option (cyclic). The just-picked screen sticks for 10 s — automatic switching is suppressed during that window — then the priority chain resumes (so e.g. starting the stopwatch during the override naturally takes over once the timer fires).
 - **Per-slot openings push (optional):** when an *Openings text entity* is set, the blueprint also writes a comma-separated state string (`"1,0,1,0,0"`) to it on every change, so individual slots on the device update with the actual window/door states. The order in which sensors are picked under *Window / door sensors* defines slot 0 → slot 4 on the device.
 - **Reconnect handler:** when the device's entities transition out of `unavailable` (boot, OTA reflash, WiFi drop, USB unplug/replug), the automation re-pushes the current window states and forces the openings screen, so the display always recovers to a known-good view.
 
@@ -68,8 +68,9 @@ It exposes a `switch` for power on/off and a `select` for the active screen, the
 | `counter` | Three-level visual counter (units → 30-unit ticks → 30-min ticks). Drives `number.<device>_counter_value`; `switch.<device>_counter_auto_tick` enables a 1 Hz on-device auto-increment. |
 | `progress` | Generic 8×8 icon + horizontal progress bar 0-100 %. Picks an icon by name from `select.<device>_progress_icon` and reads the percentage from `number.<device>_progress_value`. |
 | `time` | Centred `HH:MM` clock from a `time:` `homeassistant` source. |
+| `stopwatch` | `MM:SS.T` stopwatch with tenths (caps at `99:59.9`). `millis()`-based so pause / resume is drift-free regardless of display refresh rate. `switch.<device>_stopwatch_running` starts / pauses; `button.<device>_stopwatch_reset` zeros without affecting the running flag. |
 
-**Inputs:** display switch, active screen select, optional openings text entity, on-schedule helper, printer progress sensor + screen option name + threshold, window sensors + screen option name, optional default screen option name.
+**Inputs:** display switch, active screen select, optional openings text entity, optional cycle button + cycle sticky timer, on-schedule helper, printer progress sensor + screen option name + threshold, window sensors + screen option name, optional stopwatch running switch + screen option name, optional default screen option name.
 
 **Setup:**
 1. Match the *active screen* option strings (`window_and_door_openings`, `progress`, …) to the option names exposed by your device's `select.<device>_active_screen` entity.
@@ -77,6 +78,9 @@ It exposes a `switch` for power on/off and a `select` for the active screen, the
 3. Pick the window/door binary sensors. **Order matters** if you use the openings text push — the first one becomes slot 0, etc.
 4. Wire the printer progress sensor and tune the threshold if the sensor reports tiny non-zero noise while idle.
 5. (Optional) Set an "Openings text entity" pointing at `text.<device>_openings` for per-slot state push.
+6. (Optional) For manual cycle: create an `input_button` helper and a `timer` helper (any initial duration — the blueprint always restarts it for 10 s on press), wire them to the *Cycle button* / *Cycle sticky timer* inputs. Wire any source you like (HW button event, voice, dashboard tile) to call `input_button.press` on the helper. The sticky timer holds the cycled screen in place; without it the screen can be immediately switched away by any priority trigger.
+7. (Optional) Wire `switch.<device>_stopwatch_running` into the *Stopwatch running switch* input so the orchestrator falls back to the stopwatch screen when it's running and nothing higher-priority is active.
+8. (Optional) For screen-aware context actions, call `button.press` on `button.<device>_context_action` directly from your own HW-event automation (no blueprint involvement). The device's `on_press` lambda dispatches based on the active screen — e.g. while the stopwatch screen is showing, it toggles `switch.<device>_stopwatch_running`.
 
 ---
 
@@ -114,53 +118,40 @@ If the button doesn't work (e.g. you haven't set up [My Home Assistant](https://
 
 ## ESPHome devices
 
-The `esphome/` directory holds two physical devices I drive from Home Assistant. Each device lives in its own subdirectory with its main YAML, screen / tab render lambdas, and a symlink back to the canonical `secrets.yaml` at the repo root. Shared boilerplate (logger, OTA, captive portal, encrypted API) is factored into `esphome/common.yaml`.
+The `esphome/` directory holds the device configs I drive from Home Assistant. Each device lives in its own subdirectory with its main YAML, screen render lambdas, and a symlink back to the canonical `secrets.yaml` at the repo root. Shared boilerplate (logger, OTA, captive portal, encrypted API) is factored into `esphome/common.yaml`.
 
 ```
 esphome/
 ├── secrets.yaml           # gitignored; per-device subdirs symlink ../secrets.yaml
 ├── common.yaml            # logger / ota / captive_portal / api
-├── data/                  # shared HA-entity imports (currently TTGO only)
-├── ttgo/
-│   ├── ttgo.yaml          # TTGO T-Display main config
-│   ├── colors.yaml        # color palette
-│   └── tabs/              # per-tab render lambda substitutions
 └── max7219_8x32/
     ├── matrix.yaml        # MAX7219 main config ("HA Display V1 Red")
     ├── icons/icons.yaml   # 8×8 pixel icon catalog for the progress screen
     └── screens/           # per-screen render lambda substitutions
 ```
 
-### TTGO T-Display
-
-ESP32 + ST7789v 135 × 240 colour LCD with two on-board buttons.
-
-- Two tabs switchable from the right button: **openings** (5 windows/doors as 3 × 2 grid) and **climate** (6 per-room temperatures with colour-coded ranges).
-- Left button publishes `esphome.ttgo_button` events to HA on `single` / `double` / `hold`, ready to wire into automations.
-- Deep sleep after 20 s of inactivity; the right button doubles as the wake pin (GPIO0 is a strapping pin and unsuitable for wake on classic ESP32, so left can't wake the device).
-- Backlight is a separate `gpio` switch turned off explicitly before `deep_sleep.enter`, so a sleeping device is genuinely dark.
-
 ### MAX7219 8×32 matrix ("HA Display V1 Red")
 
 ESP32 DevKit V1 + 4× cascaded FC-16 MAX7219 modules (32 cols × 8 rows monochrome LEDs).
 
-- Five swappable screens picked via `select.<device>_active_screen`: `window_and_door_openings`, `text`, `counter`, `progress`, `time`.
+- Six swappable screens picked via `select.<device>_active_screen`: `window_and_door_openings`, `text`, `counter`, `progress`, `time`, `stopwatch`.
 - Generic interface — the device knows nothing about the user's specific HA entities. All data flows in via writeable HA entities:
   - `text.<device>_openings` — comma-separated open/closed state for 5 slots.
   - `text.<device>_text_screen_content`, `select.<device>_text_screen_alignment`, `switch.<device>_text_screen_scrolling` — text screen config.
   - `number.<device>_counter_value` (+ `switch.<device>_counter_auto_tick`) — counter screen value and 1 Hz autonomous tick.
   - `select.<device>_progress_icon` (catalog from `icons/icons.yaml`) + `number.<device>_progress_value` — progress screen.
-  - `switch.<device>_display_on` and `number.<device>_display_intensity` — power toggle and 0-15 brightness.
-- Pairs with the **Display Orchestrator V1** blueprint above for the schedule + windows + printer wiring; everything else is plain HA service calls.
+  - `switch.<device>_stopwatch_running` (+ `button.<device>_stopwatch_reset`) — stopwatch start/stop and reset.
+  - `button.<device>_context_action` — screen-aware action button; the device decides what to do based on the active screen (e.g. while on stopwatch, toggles `stopwatch_running`).
+  - `switch.<device>_display_on`, `switch.<device>_display_flipped`, `number.<device>_display_intensity` — power, 180° flip for upside-down mounting, 0-15 brightness.
+- Pairs with the **Display Orchestrator V1** blueprint above for the schedule + windows + printer + stopwatch + cycle wiring; the context button you wire from your own HW-event automation.
 
 ### Build & flash
 
 ```sh
-esphome compile esphome/ttgo/ttgo.yaml
 esphome compile esphome/max7219_8x32/matrix.yaml
 ```
 
-First flash over USB; subsequent reflashes can use OTA at `<device>.local` (e.g. `esphome run ... → [2] Over The Air`). For TTGO the OTA window is short because of deep sleep — wake the device first by pressing the right button.
+First flash over USB; subsequent reflashes can use OTA at `<device>.local` (e.g. `esphome run ... → [2] Over The Air`).
 
 ## License
 

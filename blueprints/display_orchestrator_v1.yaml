@@ -10,14 +10,15 @@ blueprint:
        screen is left alone (it'll be re-applied next time the display
        turns back on).
 
-    2. While the display is on, an open window or door switches the
-       active screen to the configured "openings" screen. Window state
-       has the highest priority.
+    2. While the display is on, a non-zero 3D-printer progress sensor
+       switches the active screen to the configured "progress" screen.
+       Printer state has the highest priority — when actively printing
+       you get the progress view even with a window open.
 
-    3. With no window open, a non-zero 3D-printer progress sensor
-       switches the active screen to the configured "printer" screen.
+    3. With the printer idle, an open window or door switches the
+       active screen to the configured "openings" screen.
 
-    When neither windows nor printer are active and a default screen is
+    When neither printer nor windows are active and a default screen is
     configured, the screen reverts to that default — otherwise it's
     left untouched and the user can switch manually via HA.
 
@@ -26,6 +27,33 @@ blueprint:
     when an "Openings text entity" is configured, to push a per-slot
     state string ("1,0,1,0,0") to the device. The first sensor in the
     list maps to the device's slot 0, the second to slot 1, and so on.
+
+    Optional manual cycle: pressing a configured `input_button`
+    advances `select.<device>_active_screen` to the next option
+    (cyclic over `state_attr(...,'options')`). When a `timer` helper
+    is also configured as the cycle sticky timer, the just-picked
+    screen sticks for the timer's duration — automatic screen
+    switching is suppressed during that window so the user actually
+    sees the screen they picked. Once the timer fires, the priority
+    chain runs again and the screen lands on whatever is currently
+    winning (e.g. stopwatch, if the user started it during the
+    sticky window). Without the sticky timer, the cycle press just
+    advances the screen and any subsequent priority trigger may
+    immediately switch it back.
+
+    Optional stopwatch priority: when a `switch` for a running
+    stopwatch is configured, it joins the priority chain between
+    windows and the default. Final order:
+    `printer > windows > stopwatch > default`.
+
+    Note on context actions: the matrix device exposes a
+    `button.<device>_context_action` whose `on_press` dispatches
+    based on the currently selected screen (e.g. on the stopwatch
+    screen it toggles `stopwatch_running`). This blueprint does
+    NOT route that — call `button.press` directly from your own
+    HW-event automation. Keeping it out of the orchestrator
+    leaves the press out of the override-timer reset path, so a
+    context press never extends the sticky window on its own.
   domain: automation
   author: mhanzelka
   input:
@@ -69,6 +97,47 @@ blueprint:
             entity:
               multiple: false
               domain: text
+
+        cycle_button:
+          name: Cycle button (optional)
+          description: >
+            An `input_button` helper that, when pressed, advances the
+            active screen to the next option in
+            `select.<device>_active_screen.options` (wraps to the
+            first option after the last). Wire any source you like to
+            this button — a physical hardware button event, a voice
+            command, a dashboard tile.
+
+            Pair with the "Cycle sticky timer" below for the 10-second
+            sticky behaviour — without that timer, the cycled screen
+            can be immediately re-overridden by any priority trigger.
+            Leave empty to disable manual cycling.
+          default: []
+          selector:
+            entity:
+              multiple: false
+              domain: input_button
+
+        cycle_sticky_timer:
+          name: Cycle sticky timer (optional)
+          description: >
+            A `timer` helper that holds the manually-cycled screen in
+            place. While this timer is `active`, automatic screen
+            switching is suppressed (priority logic is skipped) — only
+            the openings push and the power switch keep updating.
+
+            Create one under Settings → Helpers → Timer with any
+            initial duration (the blueprint always (re)starts it for
+            10 seconds on a cycle press). Leave empty if you don't
+            want the sticky behaviour — cycling still works, but a
+            cycled screen can be immediately switched away by any
+            priority trigger that fires next.
+          default: []
+          selector:
+            entity:
+              multiple: false
+              domain: timer
+
 
     # ── Section: Schedule ─────────────────────────────────────────────────────
 
@@ -173,6 +242,38 @@ blueprint:
           selector:
             text:
 
+    # ── Section: Stopwatch ────────────────────────────────────────────────────
+
+    section_stopwatch:
+      name: Stopwatch
+      icon: mdi:timer-outline
+      collapsed: true
+      input:
+
+        stopwatch_running_switch:
+          name: Stopwatch running switch (optional)
+          description: >
+            A `switch` that's on while a stopwatch is running on the
+            device. For the matrix this is
+            `switch.<device>_stopwatch_running`. When configured and
+            on, the stopwatch screen joins the priority chain between
+            windows and the default fallback. Leave empty to disable.
+          default: []
+          selector:
+            entity:
+              multiple: false
+              domain: switch
+
+        stopwatch_screen_option:
+          name: Stopwatch screen option name
+          description: >
+            The exact `select.options` value that renders the
+            stopwatch screen. Must match one of the options on the
+            configured select entity (case-sensitive).
+          default: "stopwatch"
+          selector:
+            text:
+
     # ── Section: Default ──────────────────────────────────────────────────────
 
     section_default:
@@ -207,6 +308,10 @@ variables:
   var_windows_screen:        !input windows_screen_option
   var_default_screen:        !input default_screen_option
   var_openings_text:         !input openings_text_entity
+  var_cycle_button:          !input cycle_button
+  var_sticky_timer:          !input cycle_sticky_timer
+  var_stopwatch_switch:      !input stopwatch_running_switch
+  var_stopwatch_screen:      !input stopwatch_screen_option
 
 # ── Triggers ──────────────────────────────────────────────────────────────────
 
@@ -240,6 +345,13 @@ trigger:
     entity_id: !input printer_progress_sensor
     id: printer_changed
 
+  # Stopwatch start/stop — re-evaluates priority so the orchestrator
+  # picks up the stopwatch screen as soon as the user starts the
+  # stopwatch (no need to wait for some other state change to retrigger).
+  - platform: state
+    entity_id: !input stopwatch_running_switch
+    id: stopwatch_changed
+
   # Device just reconnected to HA (boot, OTA reflash, WiFi drop, USB
   # unplug/replug). This is purely about availability — the destination
   # state of the watched entity is irrelevant, only that it transitioned
@@ -254,6 +366,21 @@ trigger:
     from: "unavailable"
     id: display_available
 
+  # Manual cycle: user pressed the configured input_button. Branch
+  # below picks the next screen, starts the sticky timer, and
+  # short-circuits before priority logic.
+  - platform: state
+    entity_id: !input cycle_button
+    id: cycle_pressed
+
+  # Cycle sticky window expired — re-evaluate priority and let the
+  # action set the active screen normally.
+  - platform: event
+    event_type: timer.finished
+    event_data:
+      entity_id: !input cycle_sticky_timer
+    id: sticky_expired
+
 # ── Conditions ────────────────────────────────────────────────────────────────
 
 condition: []
@@ -261,6 +388,38 @@ condition: []
 # ── Actions ───────────────────────────────────────────────────────────────────
 
 action:
+  # ── Manual cycle: pick next screen, start sticky timer, stop ────────────
+  # Short-circuits the rest of the action so the priority logic doesn't
+  # immediately fight back. The 10-second timer below gates further
+  # automatic screen switches until it expires.
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: cycle_pressed
+        sequence:
+          - variables:
+              opts: "{{ state_attr(var_active_screen, 'options') or [] }}"
+              cur:  "{{ states(var_active_screen) }}"
+              cur_idx: "{{ opts.index(cur) if cur in opts else -1 }}"
+              next_screen: >-
+                {{ opts[(cur_idx + 1) % (opts | count)]
+                   if (opts | count) > 0 else cur }}
+          - service: select.select_option
+            target:
+              entity_id: "{{ var_active_screen }}"
+            data:
+              option: "{{ next_screen }}"
+          - if:
+              - condition: template
+                value_template: "{{ var_sticky_timer not in [{}, '', none] }}"
+            then:
+              - service: timer.start
+                target:
+                  entity_id: "{{ var_sticky_timer }}"
+                data:
+                  duration: "00:00:10"
+          - stop: "manual cycle handled — skip priority"
+
   - variables:
       schedule_on: "{{ is_state(var_on_schedule, 'on') }}"
 
@@ -279,20 +438,35 @@ action:
       printer_active: >-
         {{ printer_progress | float(0) > var_printer_threshold | float(0) }}
 
-      # Resolve the screen we want shown right now (only meaningful when
-      # the display is on). Priority: device-recovery → windows >
-      # printer > default. Empty string means "leave the current
-      # selection untouched". When the device just came back online
-      # (`display_available` trigger) we always force the openings
-      # screen so the user sees a known good view after a boot / OTA
-      # / reconnect, regardless of current window or printer state.
+      # Stopwatch is "active" when its switch (optional input) is on.
+      # Joins the priority chain between windows and the default.
+      stopwatch_active: >-
+        {%- set ents = expand(var_stopwatch_switch) | list -%}
+        {%- if ents | count > 0 and ents[0].state == 'on' -%}true
+        {%- else -%}false{%- endif -%}
+
+      # Resolve the screen we want shown right now (only meaningful
+      # when the display is on). Priority:
+      #   printer > windows > stopwatch > default
+      # Empty string means "leave the current selection untouched".
+      # On `display_available` we re-push window states and re-apply
+      # power, but the screen is whatever the current conditions imply
+      # (no trigger-based override). The cycle branch above bypasses
+      # this entirely.
       target_screen: >-
-        {%- if trigger is not none and trigger.id == 'display_available' -%}
-          {{ var_windows_screen }}
+        {%- if printer_active -%}{{ var_printer_screen }}
         {%- elif any_window_open -%}{{ var_windows_screen }}
-        {%- elif printer_active -%}{{ var_printer_screen }}
+        {%- elif stopwatch_active == 'true' -%}{{ var_stopwatch_screen }}
         {%- else -%}{{ var_default_screen }}
         {%- endif -%}
+
+      # Cycle sticky gate: while the sticky timer is active, the
+      # active-screen update below is skipped. The openings push and
+      # the power switch keep updating regardless.
+      sticky_active: >-
+        {%- set ents = expand(var_sticky_timer) | list -%}
+        {%- if ents | count > 0 and ents[0].state == 'active' -%}true
+        {%- else -%}false{%- endif -%}
 
   # ── Push per-slot openings to the device's text entity (when set) ────────
   # Builds a comma-separated string from `window_sensors` in selection
@@ -322,10 +496,16 @@ action:
     target:
       entity_id: "{{ var_display_switch }}"
 
-  # ── Active screen: only meaningful while the display is on ───────────────
+  # ── Active screen: gated by schedule + cycle sticky timer ────────────────
+  # When the cycle sticky timer is active, the just-picked manual
+  # screen stays put even if other triggers fire. The push and power
+  # blocks above still ran, so device-side state stays in sync.
   - if:
       - condition: template
-        value_template: "{{ schedule_on and target_screen != '' }}"
+        value_template: >-
+          {{ schedule_on
+             and target_screen != ''
+             and sticky_active != 'true' }}
     then:
       - service: select.select_option
         target:
