@@ -84,6 +84,23 @@ It exposes a `switch` for power on/off and a `select` for the active screen, the
 
 ---
 
+### Boiler Demand Control V1
+
+[![Open your Home Assistant instance and show the blueprint import dialog with this blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fmhanzelka%2Fhomeassistant%2Fmain%2Fblueprints%2Fboiler_demand_control_v1.yaml)
+
+Switches a boiler on and off from the demand of radiator valves (TRVs). The boiler's room thermostat is used as a plain on/off switch: when any selected valve is heating, the thermostat is set to `heat` with a high target temperature; when none is, its HVAC mode is set to `off`.
+
+- **Minimum heating time (debounce):** a valve has to stay in `heat` for a configurable time (default 2 min) before the boiler turns on. Brief `heat` blips — a TRV rebooting on a weak battery, a calibration, a short override — never reach the boiler. Set to 0 to disable.
+- **Off delay (optional):** all valves have to stay off for a configurable time (default 0) before the boiler turns off.
+- Runs in `mode: restart`: every valve state change cancels a pending wait and re-evaluates. Attribute-only changes (current temperature) are ignored.
+- The thermostat is only called when its state actually has to change, and the boiler is re-synced when Home Assistant starts.
+
+**Inputs:** radiator valves, boiler thermostat, "on" target temperature, minimum heating time, off delay.
+
+**Setup:** pick the valves and the thermostat; tune the two delays if needed. No helpers required.
+
+---
+
 ### Window Ventilation Guard
 
 > **Status: in development.** The YAML is in this repo but the blueprint isn't ready for general use yet — no one-click import button on purpose. Expect breaking changes; import only if you're ready to read the source.
@@ -115,6 +132,7 @@ If the button doesn't work (e.g. you haven't set up [My Home Assistant](https://
    - `https://raw.githubusercontent.com/mhanzelka/homeassistant/main/blueprints/air_purifier_schedule_v1.yaml`
    - `https://raw.githubusercontent.com/mhanzelka/homeassistant/main/blueprints/motion_activated_lights_v1.yaml`
    - `https://raw.githubusercontent.com/mhanzelka/homeassistant/main/blueprints/display_orchestrator_v1.yaml`
+   - `https://raw.githubusercontent.com/mhanzelka/homeassistant/main/blueprints/boiler_demand_control_v1.yaml`
 
 ## ESPHome devices
 

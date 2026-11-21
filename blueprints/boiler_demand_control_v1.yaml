@@ -1,0 +1,161 @@
+blueprint:
+  name: "Boiler Demand Control V1"
+  description: >
+    Turns a boiler thermostat on whenever any of the selected radiator valves
+    (TRVs) is heating, and off once none of them is. The thermostat is used as
+    a plain on/off switch for the boiler: "on" sets it to heat with a high
+    target temperature, "off" switches its HVAC mode off.
+
+    A valve has to keep heating for a configurable time before the boiler is
+    turned on, so a valve that briefly reports "heat" (a reboot on a weak
+    battery, a calibration, a short override) never reaches the boiler. The
+    automation runs in mode: restart, so every valve change cancels the wait
+    and re-evaluates from scratch.
+  domain: automation
+  author: mhanzelka
+  input:
+
+    # ── Section: Devices ──────────────────────────────────────────────────────
+
+    section_devices:
+      name: Devices
+      icon: mdi:radiator
+      input:
+
+        valves:
+          name: Radiator valves
+          description: >
+            The climate entities of the radiator valves (TRVs). The boiler is
+            wanted when ANY of them is in HVAC mode "heat".
+          selector:
+            entity:
+              domain: climate
+              multiple: true
+
+        boiler_thermostat:
+          name: Boiler thermostat
+          description: >
+            The climate entity that switches the boiler (e.g. a room
+            thermostat wired to the boiler's on/off contact).
+          selector:
+            entity:
+              domain: climate
+
+        boiler_on_temperature:
+          name: Boiler "on" target temperature
+          description: >
+            Target temperature set on the thermostat when the boiler should
+            run. Pick a value high enough that the thermostat never reaches it
+            on its own, so the valves decide when to heat.
+          default: 30
+          selector:
+            number:
+              min: 5
+              max: 35
+              step: 0.5
+              unit_of_measurement: "°C"
+              mode: slider
+
+    # ── Section: Behavior ────────────────────────────────────────────────────
+
+    section_behavior:
+      name: Behavior
+      icon: mdi:cog-outline
+      collapsed: true
+      input:
+
+        heat_on_delay:
+          name: Minimum heating time before the boiler turns on
+          description: >
+            How long at least one valve has to stay in "heat" before the
+            boiler is switched on. Shorter "heat" blips are ignored. Set to 0
+            to switch the boiler on immediately.
+          default:
+            hours: 0
+            minutes: 2
+            seconds: 0
+          selector:
+            duration:
+
+        heat_off_delay:
+          name: Delay before the boiler turns off
+          description: >
+            How long all valves have to stay off before the boiler is switched
+            off. Keeps the boiler running through a valve that drops out for a
+            moment. Set to 0 to switch the boiler off immediately.
+          default:
+            hours: 0
+            minutes: 0
+            seconds: 0
+          selector:
+            duration:
+
+# ── Variables ─────────────────────────────────────────────────────────────────
+# Resolve !input references into template variables so they can be used inside
+# Jinja2 expressions.
+
+variables:
+  var_valves:          !input valves
+  var_thermostat:      !input boiler_thermostat
+  var_on_temperature:  !input boiler_on_temperature
+
+# ── Triggers ──────────────────────────────────────────────────────────────────
+
+trigger:
+  # Any valve changes its state (heat / off / unavailable …). "to: null"
+  # ignores attribute-only changes such as current_temperature.
+  - platform: state
+    entity_id: !input valves
+    to: null
+    id: valve_changed
+
+  # Home Assistant started – re-sync the boiler with the valves.
+  - platform: homeassistant
+    event: start
+    id: ha_start
+
+# ── Conditions ────────────────────────────────────────────────────────────────
+
+condition: []
+
+# ── Actions ───────────────────────────────────────────────────────────────────
+
+action:
+  - variables:
+      demand: >
+        {{ expand(var_valves) | selectattr('state', 'eq', 'heat')
+           | list | count > 0 }}
+
+  - if:
+      - condition: template
+        value_template: "{{ demand }}"
+    then:
+      # Debounce: mode: restart cancels this wait on any valve change, so the
+      # boiler only turns on after a valve has kept heating for the full delay.
+      - delay: !input heat_on_delay
+      - if:
+          - condition: template
+            value_template: >
+              {{ not is_state(var_thermostat, 'heat')
+                 or state_attr(var_thermostat, 'temperature') | float(0)
+                    != var_on_temperature | float }}
+        then:
+          - service: climate.set_temperature
+            target:
+              entity_id: "{{ var_thermostat }}"
+            data:
+              hvac_mode: heat
+              temperature: "{{ var_on_temperature }}"
+    else:
+      - delay: !input heat_off_delay
+      - if:
+          - condition: template
+            value_template: "{{ not is_state(var_thermostat, 'off') }}"
+        then:
+          - service: climate.set_hvac_mode
+            target:
+              entity_id: "{{ var_thermostat }}"
+            data:
+              hvac_mode: "off"
+
+mode: restart
